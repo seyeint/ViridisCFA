@@ -66,15 +66,21 @@ pip install -r requirements.txt
 
 ### 3. Configure environment
 
-Create a `.env` file:
+Copy the example and fill in your keys:
+
+```bash
+cp .env.example .env
+```
+
+Then edit `.env`:
 
 ```env
 OPENAI_API_KEY=sk-your-key-here
-EDGAR_IDENTITY=your-email@example.com
+EDGAR_IDENTITY=yourname@yourcompany.com
 ```
 
 - **OPENAI_API_KEY**: Your OpenAI API key (needs access to `gpt-5.4`)
-- **EDGAR_IDENTITY**: Required by SEC fair access policy — use your real email
+- **EDGAR_IDENTITY**: Required by [SEC fair access policy](https://www.sec.gov/os/webmaster-faq#developers). **Must be a professional/institutional email** (e.g. `name@company.com`). Consumer email providers (Gmail, Yahoo, Hotmail) will be rate-limited or blocked by SEC servers.
 
 ### 4. Chrome/ChromeDriver
 
