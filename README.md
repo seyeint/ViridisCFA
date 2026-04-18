@@ -51,7 +51,12 @@ Both branches run **in parallel** using threads — the transcript analysis comp
 
 ## Setup
 
-### 1. Clone and create virtual environment
+### 1. Prerequisites
+
+- **Python 3.10+** required (`edgartools` needs it). Check with `python3 --version`. On macOS, the system Python is 3.9 — install a newer version from [python.org](https://www.python.org/downloads/) or via `brew install python`.
+- **Google Chrome** (for transcript scraping and PDF generation)
+
+### 2. Clone and create virtual environment
 
 ```bash
 python3 -m venv venv

@@ -1,83 +1,13 @@
-aiofiles==25.1.0
-annotated-types==0.7.0
-anyio==4.9.0
-attrs==26.1.0
-beautifulsoup4==4.13.3
-brotli==1.2.0
-certifi==2026.2.25
-cffi==2.0.0
-charset-normalizer==3.4.1
-cssselect2==0.9.0
-defusedxml==0.7.1
-distro==1.9.0
-edgartools==5.30.0
-fastcore==1.8.0
-filelock==3.28.0
-fonttools==4.62.1
-fpdf2==2.8.7
-h11==0.14.0
-html2text==2025.4.15
-httpcore==1.0.7
-httpx==0.28.1
-httpxthrottlecache==0.3.5
-humanize==4.12.2
-idna==3.10
-Jinja2==3.1.6
-jiter==0.9.0
-lxml==5.3.1
-Markdown==3.10.2
-markdown-it-py==3.0.0
-MarkupSafe==3.0.3
-mdurl==0.1.2
-nest-asyncio==1.6.0
-numpy==2.2.4
-openai==1.69.0
-orjson==3.10.16
-outcome==1.3.0.post0
-packaging==24.2
-pandas==2.2.3
-pillow==12.2.0
-pyarrow==19.0.1
-pycparser==3.0
-pydantic==2.11.1
-pydantic_core==2.33.0
-pydyf==0.12.1
-Pygments==2.19.1
-pyphen==0.17.2
-pyrate-limiter==4.1.0
-PySocks==1.7.1
-python-dateutil==2.9.0.post0
-python-dotenv==1.1.0
-pytz==2025.2
-rank-bm25==0.2.2
-RapidFuzz==3.12.2
-regex==2024.11.6
-requests==2.32.3
-rich==13.9.4
-selenium==4.43.0
-selenium-stealth==1.0.6
-six==1.17.0
-sniffio==1.3.1
-sortedcontainers==2.4.0
-soupsieve==2.6
-stamina==25.1.0
-tabulate==0.9.0
-tenacity==9.0.0
-textdistance==4.6.3
-tiktoken==0.9.0
-tinycss2==1.5.1
-tinyhtml5==2.1.0
-tqdm==4.67.1
-trio==0.33.0
-trio-websocket==0.12.2
-truststore==0.10.4
-typing-inspection==0.4.0
-typing_extensions==4.15.0
-tzdata==2025.2
-Unidecode==1.3.8
-urllib3==2.6.3
-weasyprint==68.1
-webencodings==0.5.1
-websocket-client==1.9.0
-wsproto==1.2.0
-zopfli==0.4.1
+# Core pipeline
+edgartools>=5.30.0          # SEC EDGAR filing access + XBRL financials
+openai>=1.69.0              # GPT-5.4 Responses API
+tiktoken>=0.9.0             # Token counting for cost estimation
+python-dotenv>=1.0.0        # .env file loading
+
+# Transcript scraping
+selenium>=4.20.0            # Headless Chrome for roic.ai + PDF generation
+selenium-stealth>=1.0.6     # Anti-detection for scraping
+html2text>=2024.2.26        # HTML to markdown conversion
+
+# Report generation
+markdown>=3.6               # Markdown to HTML for final report
