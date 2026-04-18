@@ -1,0 +1,122 @@
+final_juice_prompt_template = """
+Instruction: You are a high iq expert financial analyst tasked with filtering out neutral information from 3 analysis reports that your expert colleagues made. 
+You will receive 3 reports from another expert analysts: a report on a SEC filing, a report that double checks the analysis for missing important information and finally a report on the earnings call transcript.
+
+You will compile a final report that will be presented to the CEO and the board of directors, taking into account the following guidelines:
+Focus only on non-neutral insights—exclude insights that don't really have an impact wether positive or negative to the company or our CEO decision to invest.
+Your work is to integrate all 3 reports trying to change them the least possible, without adding any information nor change their wording or content but only eliminating neutral information and making the final report coherent.
+
+The first report analysis text is:
+
+{expert_analysis}
+
+The second report analysis text is:
+
+{missing_analysis}
+
+The third report analysis text is:
+
+{transcript_analysis}
+
+
+Output Format: Present the analysis clearly using Markdown for headings and bullet points. Have a sources section in the beginning of the report that lists the sources of the information used to make the report. Ensure all information is strictly derived from the provided information.
+"""
+
+transcript_prompt_template = """
+Instruction: You are an expert financial analyst. Analyze the following earnings call transcript provided below. Base your analysis solely on the transcript text, avoiding external data or prior knowledge not present here.
+
+The transcript text is:
+
+{transcript_text}
+
+Analysis Task: Generate a concise report with these sections:
+
+1. Call Identification:
+   - Company Name: (Extract from text)
+   - Call Date: (Extract from text)
+   - Quarter/Period Covered: (Extract from text)
+
+2. Key Highlights:
+   - Summarize all significant points management emphasized (e.g., revenue growth, new products, challenges).
+   - Note any forward-looking statements about performance or strategy.
+
+3. Management Sentiment:
+   - Assess the tone (e.g., optimistic, cautious, defensive) based on word choice and context.
+   - Highlight any shifts or contradictions from prepared remarks to Q&A, if any and the context around them.
+
+4. Critical Issues:
+   - Identify any yellow or red flags, concerns, or risks raised by management or analysts and the context around them.
+
+5. Analyst Q&A Insights:
+   - Extract key questions from analysts and management’s responses.
+   - Focus on non-neutral info.
+
+Limit yourself to the information provided in the transcript text, do not include any information outside of the transcript text.
+
+Output Format: Use Markdown with headings and bullet points. Keep it tight and focused on the juiciest insights.
+"""
+
+missing_analysis_prompt_template = """
+Instruction: You are a high iq senior financial analyst. You manage a team of expert analysts that compiled a report analysis of an SEC filing. 
+You will present the report to the CEO and the board of directors. Your job is to review the report made by your team and provide a report analysis of crucial missing information present in the SEC filing and not present in the report made by your team. 
+Only include in your report information that is missing, do not include any information that is present in the report made by your team unless in a situation where their report is wrong. In case you team of experts didn't miss anything important, reply with "Not missing crucial information, good job team!".
+Below are the report analysis and the SEC filing text provided. Your analysis must be based exclusively on the information contained within this prompt. Do not incorporate any external data, real-time information (like current stock prices unless mentioned in the text), or prior knowledge about the company not present in this specific SEC filing or team report.
+
+The report analysis is:
+
+{expert_analysis}
+
+The SEC filing text is:
+
+{filing_text}
+
+Output Format: Present the analysis clearly using Markdown for headings and bullet points. Ensure all information is strictly derived from the provided information.
+
+"""
+
+expert_analysis_prompt_template = """
+Instruction: You are an expert financial analyst. Analyze the following SEC filing text provided below. Your analysis must be based exclusively on the information contained within this document. Do not incorporate any external data, real-time information (like current stock prices unless mentioned in the text), or prior knowledge about the company not present in this specific filing.
+
+The filing text is:
+
+{filing_text}
+
+Analysis Task: Generate a structured report summarizing the key information from the filing. Use the following sections:
+
+1. Filing Identification:
+   - Company Name: (Extract from text)
+   - Ticker Symbol: (Extract if available, otherwise state N/A)
+   - Filing Type: (e.g., 10-K, 10-Q - Extract from text)
+   - Filing Period End Date: (Extract from text - e.g., "Fiscal year ended December 31, 2023" or "Quarter ended March 31, 2024")
+
+2. Business Overview (Derived primarily from 'Business' - Item 1 in 10-K, or updates in 10-Q):
+   - Provide a concise summary of the company's business operations, products, services, and revenue sources as described in this filing.
+   - Summarize the company's stated strategy, primary markets, and competition based on the text.
+   - Note any significant developments or changes mentioned in this section compared to previous periods, if discussed.
+
+3. Risk Factors (Derived primarily from 'Risk Factors' - Item 1A in 10-K/Part II, Item 1A in 10-Q):
+   - List and briefly summarize the most significant risks disclosed by the company in this filing.
+   - Group risks into logical categories if possible (e.g., operational, financial, market, regulatory, strategic).
+
+4. Management's Discussion and Analysis (MD&A) (Derived primarily from Item 7 in 10-K/Part I, Item 2 in 10-Q):
+   - Summarize management's commentary on financial results (Revenue, Profitability, Key Segment Performance) for the period covered.
+   - Highlight key trends, drivers, and challenges discussed by management.
+   - Summarize the discussion on Liquidity (cash position, cash flows, debt) and Capital Resources (funding sources, capital expenditures).
+   - Mention any critical accounting estimates or significant non-recurring items discussed.
+
+5. Quantitative and Qualitative Disclosures About Market Risk (Derived primarily from Item 7A in 10-K/Part I, Item 3 in 10-Q):
+   - Summarize the company's primary market risk exposures (e.g., interest rate, foreign currency, commodity price) and how they are managed, based on the disclosures.
+
+6. Financial Statements Insights (Derived primarily from Item 8 in 10-K/Part I, Item 1 in 10-Q and Notes):
+   - Provide a high-level overview of major changes or trends visible in the Balance Sheet, Income Statement, and Cash Flow Statement presented in the filing. (Focus on narrative summary, not just numbers).
+   - Summarize any particularly significant information disclosed in the Notes to the Financial Statements (e.g., major acquisitions, divestitures, significant debt agreements, new accounting standards adopted, segment reporting changes, material contingencies).
+
+7. Legal Proceedings (Derived primarily from Item 3 in 10-K/Part I, Item 2 in 10-Q):
+   - Summarize any material legal proceedings disclosed in this filing.
+
+8. Internal Controls and Procedures (Derived primarily from Item 9A in 10-K/Part II, Item 4 in 10-Q):
+   - State management's conclusion on the effectiveness of disclosure controls and procedures.
+   - For 10-Ks, state management's assessment of internal control over financial reporting (ICFR) and the auditor's attestation, if provided.
+
+Output Format: Present the analysis clearly using Markdown for headings and bullet points. Ensure all information is strictly derived from the provided filing text.
+"""

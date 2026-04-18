@@ -1,0 +1,29 @@
+# Environment variables
+.env
+
+# Python virtual environment
+venv/
+*/venv/
+.venv/
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Data folder (optional - if you don't want to commit generated data)
+data/
+
+# IDE specific files
+.idea/
+.vscode/
+
+# Dependency management files (if applicable, adjust as needed)
+# requirements.txt
+# Pipfile.lock
+# poetry.lock
+
+# OS specific files
+.DS_Store
+Thumbs.db 
