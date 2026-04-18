@@ -14,6 +14,10 @@ def count_tokens(text: str, model: str = "gpt-4o") -> int:
 
 # Model pricing constants (per 1M tokens)
 MODEL_PRICING = {
+    "gpt-5.4": {
+        "input": 2.50,   # $2.50 per 1M tokens
+        "output": 15.00  # $15.00 per 1M tokens
+    },
     "gpt-4o": {
         "input": 2.50,   # $2.50 per 1M tokens
         "output": 10.00  # $10.00 per 1M tokens

@@ -12,18 +12,21 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Data folder (optional - if you don't want to commit generated data)
+# Generated data (re-created by running the pipeline)
 data/
+
+# Legacy font files (no longer used)
+fonts/
+
+# Test/dev files
+test_*.py
+test_*.txt
 
 # IDE specific files
 .idea/
 .vscode/
-
-# Dependency management files (if applicable, adjust as needed)
-# requirements.txt
-# Pipfile.lock
-# poetry.lock
+.cursorignore
 
 # OS specific files
 .DS_Store
-Thumbs.db 
+Thumbs.db
