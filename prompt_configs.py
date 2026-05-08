@@ -1,25 +1,56 @@
 final_juice_prompt_template = """
-Instruction: You are a high iq expert financial analyst tasked with filtering out neutral information from 3 analysis reports that your expert colleagues made. 
-You will receive 3 reports from another expert analysts: a report on a SEC filing, a report that double checks the analysis for missing important information and finally a report on the earnings call transcript.
+Instruction: You are a high IQ expert financial analyst tasked with filtering out neutral information from analysis reports that your expert colleagues made and producing a final investment-grade report.
+
+You will receive reports from expert analysts: a report on a SEC filing, a report that double checks the analysis for missing important information{transcript_intro}.
+
+{date_context}
 
 You will compile a final report that will be presented to the CEO and the board of directors, taking into account the following guidelines:
-Focus only on non-neutral insights—exclude insights that don't really have an impact wether positive or negative to the company or our CEO decision to invest.
-Your work is to integrate all 3 reports trying to change them the least possible, without adding any information nor change their wording or content but only eliminating neutral information and making the final report coherent.
+- Focus only on non-neutral insights—exclude insights that don't really have an impact whether positive or negative to the company or our CEO decision to invest.
+- Your work is to integrate all reports trying to change them the least possible, without adding any information nor change their wording or content but only eliminating neutral information and making the final report coherent.
+- End the report with a clear "Investment Conclusion" section (see below).
 
-The first report analysis text is:
+The first report analysis (SEC filing) is:
 
 {expert_analysis}
 
-The second report analysis text is:
+The second report analysis (missing information check) is:
 
 {missing_analysis}
+{transcript_section}
 
-The third report analysis text is:
+Output Format:
+- Present the analysis clearly using Markdown for headings and bullet points.
+- Have a sources section in the beginning of the report that lists the sources of the information used to make the report.
+- Ensure all information is strictly derived from the provided information.
+- End with an "Investment Conclusion" section containing:
+  1. A one-line investment thesis summarizing the core case for or against this company.
+  2. **Bull Case**: The scenario and reasoning under which this investment works well.
+  3. **Bear Case**: The scenario and reasoning under which this investment fails or underperforms.
+  4. **Key Catalysts / Timeline**: The most important upcoming events or milestones that would confirm or invalidate each case.
+  5. **Stance**: State clearly whether the overall picture is Bullish, Bearish, or Neutral, with a conviction level (High, Medium, Low) and a brief justification.
+"""
 
-{transcript_analysis}
+batch_comparison_prompt_template = """
+Instruction: You are a senior portfolio analyst. You have received final investment analysis reports for {ticker_count} companies from your research team. Your task is to produce a concise screening summary that ranks these companies by investment attractiveness.
 
+For each company, you have a full analysis report. Compare them across these dimensions:
+- Financial health and trajectory
+- Growth potential and catalysts
+- Risk profile (red/yellow flags)
+- Management quality (based on earnings call if available)
+- Overall investment stance from each report's conclusion
 
-Output Format: Present the analysis clearly using Markdown for headings and bullet points. Have a sources section in the beginning of the report that lists the sources of the information used to make the report. Ensure all information is strictly derived from the provided information.
+The analysis reports are:
+
+{all_reports}
+
+Output Format:
+- Start with a ranking table: Rank | Ticker | Stance | Conviction | One-line rationale
+- Then provide a brief paragraph (3-5 sentences) for each company explaining why it ranks where it does.
+- End with "Top Picks" — which 1-3 companies deserve deeper research and why.
+- Keep it concise — this is a screening tool, not a deep dive.
+- Use Markdown formatting.
 """
 
 transcript_prompt_template = """

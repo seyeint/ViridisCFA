@@ -1,34 +1,34 @@
 # ViridisCFA — AI-Powered Equity Research Pipeline
 
-An automated equity research pipeline that pulls SEC filings and earnings call transcripts, runs multi-stage AI analysis using GPT-5.4, and produces a synthesized investment report.
+An automated equity research pipeline that pulls SEC filings and earnings call transcripts, runs multi-stage AI analysis using GPT-5.4 with flex processing (~50% cheaper), and produces synthesized investment reports with bull/bear cases.
 
 ## How It Works
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    User enters ticker                    │
+│               User enters ticker(s)                     │
+│            (comma-separated, e.g. AAPL, SNAP)           │
 └─────────────────────┬───────────────────────────────────┘
-                      │
+                      │  (per ticker)
           ┌───────────┴───────────┐
           ▼                       ▼
    ┌──────────────┐      ┌───────────────┐
    │ Branch 1:    │      │ Branch 2:     │
    │ SEC Filing   │      │ Transcript    │
    │              │      │               │
-   │ 1. Fetch     │      │ 1. Scrape     │
-   │    latest    │      │    roic.ai    │
-   │    10-Q      │      │               │
-   │              │      │ 2. GPT-5.4    │
-   │ 2. XBRL      │      │    analyze    │
-   │    4-year    │      │    transcript │
-   │    trends    │      │               │
-   │              │      └───────┬───────┘
-   │ 3. GPT-5.4   │              │
-   │    Expert    │              │
+   │ 1. Latest    │      │ 1. Scrape     │
+   │    10-K/10-Q │      │    roic.ai    │
+   │    (auto)    │      │    (optional) │
+   │              │      │               │
+   │ 2. XBRL      │      │ 2. GPT-5.4    │
+   │    4-year    │      │    analyze    │
+   │    trends    │      │    transcript │
+   │              │      │               │
+   │ 3. Expert    │      └───────┬───────┘
    │    Analysis  │              │
+   │    (high)    │              │
    │              │              │
-   │ 4. GPT-5.4   │              │
-   │    Missing   │              │
+   │ 4. Missing   │              │
    │    Analysis  │              │
    └──────┬───────┘              │
           │                      │
@@ -36,14 +36,17 @@ An automated equity research pipeline that pulls SEC filings and earnings call t
                      ▼
           ┌─────────────────────┐
           │ GPT-5.4 Final       │
-          │ Synthesis Report    │
+          │ Synthesis + Bull/   │
+          │ Bear Case           │
           └─────────┬───────────┘
                     ▼
           ┌─────────────────────┐
-          │ Output:             │
-          │ • Markdown report   │
-          │ • Styled HTML       │
-          │ • PDF               │
+          │ PDF Report          │
+          └─────────┬───────────┘
+                    ▼  (if multi-ticker)
+          ┌─────────────────────┐
+          │ Batch Comparison    │
+          │ & Ranking           │
           └─────────────────────┘
 ```
 
@@ -86,7 +89,7 @@ EDGAR_IDENTITY=yourname@yourcompany.com
 
 ### 4. Chrome/ChromeDriver
 
-Selenium requires Chrome and ChromeDriver for transcript scraping. On most systems, `selenium` auto-manages this via `selenium-manager`.
+Selenium requires Chrome/ChromeDriver for transcript scraping. On most systems, `selenium` auto-manages this. Just run it.
 
 ## Usage
 
@@ -95,13 +98,14 @@ source venv/bin/activate
 python main.py
 ```
 
-Enter a ticker symbol when prompted. The pipeline will:
+Enter one or more ticker symbols (comma-separated). The pipeline will:
 
-1. Fetch the latest 10-Q filing from SEC EDGAR (as structured markdown)
+1. Fetch the latest 10-K or 10-Q from SEC EDGAR (whichever is newer, skipping amendments)
 2. Pull 4-year historical financials from XBRL
-3. Scrape the latest earnings call transcript from roic.ai
-4. Run 4 GPT-5.4 analysis stages with `medium` reasoning effort
-5. Generate a final report in Markdown, HTML, and PDF
+3. Scrape the latest earnings call transcript from roic.ai (optional — reports still generated if unavailable)
+4. Run 4 GPT-5.4 analysis stages using **flex processing** (~50% off, auto-fallback to standard if unavailable)
+5. Generate a final report with **investment conclusion** (bull/bear case + stance)
+6. If multiple tickers: produce a **batch comparison** ranking all companies
 
 ### Output
 
@@ -109,18 +113,19 @@ Reports are saved to `data/`:
 
 ```
 data/
+├── {TICKER}_final_report.pdf                      # ← Final PDF reports (top level)
 ├── filings/
-│   ├── {TICKER}-10-Q-{DATE}-raw.md              # Raw SEC filing
-│   ├── {TICKER}-10-Q-{DATE}-xbrl-trends.md      # 4-year financial trends
-│   ├── {TICKER}-10-Q-{DATE}-expert-analysis.md   # Expert analysis
-│   └── {TICKER}-10-Q-{DATE}-missing-analysis.md  # Missing info check
+│   ├── {TICKER}-10-K-{DATE}-raw.md                # Raw SEC filing
+│   ├── {TICKER}-10-K-{DATE}-xbrl-trends.md        # 4-year financial trends
+│   ├── {TICKER}-10-K-{DATE}-expert-analysis.md    # Expert analysis
+│   └── {TICKER}-10-K-{DATE}-missing-analysis.md   # Missing info check
 ├── transcripts/
-│   ├── {TICKER}_transcript.html                  # Raw transcript HTML
-│   ├── {TICKER}_transcript.md                    # Transcript markdown
-│   └── {TICKER}-transcript-analysis.md           # Transcript analysis
-├── {TICKER}_final_report.md                      # Final synthesized report
-├── {TICKER}_final_report.html                    # Styled HTML report
-└── {TICKER}_final_report.pdf                     # PDF report
+│   ├── {TICKER}_transcript.md                     # Transcript markdown
+│   └── {TICKER}-transcript-analysis.md            # Transcript analysis
+└── intermediate/
+    ├── {TICKER}_final_report.md                   # Final report (markdown source)
+    ├── {TICKER}_final_report.html                 # Styled HTML (Chrome input)
+    └── batch_comparison.md                        # Multi-ticker ranking
 ```
 
 ## Architecture
@@ -129,37 +134,43 @@ data/
 
 | Source | Library | Data Retrieved |
 |--------|---------|---------------|
-| SEC EDGAR | `edgartools` v5.30.0 | Latest 10-Q filing as markdown |
+| SEC EDGAR | `edgartools` v5.30.0 | Latest 10-K or 10-Q (auto, skips amendments) |
 | SEC XBRL | `edgartools` EntityFacts | 4-year income statement + balance sheet |
-| roic.ai | `selenium` + stealth | Latest earnings call transcript |
+| roic.ai | `selenium` + stealth | Latest earnings call transcript (optional) |
 
 ### Analysis Pipeline
 
 | Stage | Model | Reasoning | Purpose |
 |-------|-------|-----------|---------|
-| Expert Analysis | GPT-5.4 | Medium | Deep analysis of filing + historical trends |
+| Expert Analysis | GPT-5.4 | **High** | Deep analysis of filing + historical trends |
 | Missing Analysis | GPT-5.4 | Medium | Identify gaps in expert analysis vs raw filing |
 | Transcript Analysis | GPT-5.4 | Medium | Extract insights from earnings call |
-| Final Synthesis | GPT-5.4 | Medium | Merge all analyses, filter neutral information |
+| Final Synthesis | GPT-5.4 | Medium | Merge all analyses, produce bull/bear case |
+| Batch Comparison | GPT-5.4 | Medium | Rank and compare tickers (multi-ticker only) |
+
+All calls use **flex processing** by default (~50% off standard pricing). If flex capacity is unavailable, requests automatically fall back to standard.
 
 ### Key Design Decisions
 
-- **`filing.markdown()` over `filing.text()`**: Preserves table structure, headings, and section hierarchy for better LLM comprehension (+10% tokens, significantly better parsing)
-- **XBRL multi-year trends**: Injects 4-year financial history the LLM couldn't see from a single quarterly filing
-- **OpenAI Responses API**: Better prompt caching and reasoning support vs Chat Completions
-- **`reasoning: medium`**: GPT-5.4 defaults to `none` (no chain-of-thought). Medium enables synthesis/planning reasoning, critical for financial analysis
-- **Sync client + ThreadPoolExecutor**: Simpler than async, works with Selenium (which blocks the event loop in async), achieves real parallelism for I/O-bound work
+- **`filing.markdown()` over `filing.text()`**: Preserves table structure, headings, and section hierarchy for better LLM comprehension
+- **XBRL multi-year trends**: Injects 4-year financial history the LLM couldn't see from a single filing
+- **Flex processing**: Batch API rates (~50% off) with automatic fallback to standard on 429
+- **`reasoning: high` for expert**: The main filing analysis gets deeper reasoning; other stages use medium
+- **Optional transcripts**: Reports are generated even when no earnings call is available
+- **Date-aware synthesis**: Filing and transcript dates are passed to the final prompt; mismatches are flagged
+- **Sync client + ThreadPoolExecutor**: Simpler than async, works with Selenium, achieves real parallelism for I/O-bound work
 
 ## Cost
 
-Typical cost per ticker (GPT-5.4, medium reasoning):
+Typical cost per ticker (GPT-5.4, flex pricing):
 
 | Filing Size | Estimated Total |
 |-------------|----------------|
-| Small (~20K tokens) | ~$0.35 |
-| Large (~85K tokens) | ~$0.75 |
+| Small (~20K tokens) | ~$0.20 |
+| Medium (~85K tokens) | ~$0.50 |
+| Large (~230K tokens) | ~$1.00 |
 
-Prompt caching can reduce repeat-run costs significantly (90% discount on cached input tokens).
+Cost summary is printed at the end of each run.
 
 ## Project Structure
 

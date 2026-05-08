@@ -18,11 +18,11 @@ openai_key = os.getenv("OPENAI_API_KEY")
 # Initialize OpenAI client (sync — no need for async in a sequential pipeline)
 client = OpenAI(api_key=openai_key) if openai_key else None
 
-def run_analysis(prompt, model="gpt-5.4", reasoning_effort="medium"):
-    """Run analysis using OpenAI Responses API with configurable reasoning effort.
+def run_analysis(prompt, model="gpt-5.4", reasoning_effort="medium", service_tier="flex"):
+    """Run analysis using OpenAI Responses API with configurable reasoning and pricing tier.
     
-    GPT-5.4 defaults to 'none' (no reasoning). For financial analysis we use 'medium'
-    which enables planning and synthesis reasoning. Options: none, low, medium, high, xhigh.
+    service_tier='flex' gives batch API rates (~50% off) but slower + may get 429.
+    Falls back to standard automatically on resource unavailable.
     """
     if not client:
         print("OpenAI API key not found in .env file.")
@@ -33,59 +33,68 @@ def run_analysis(prompt, model="gpt-5.4", reasoning_effort="medium"):
     print(f"Prompt contains approximately {prompt_tokens:,} tokens")
     
     estimated_costs = estimate_cost(prompt_tokens, model)
-    print(f"Estimated cost: ${estimated_costs['total_cost']:.4f}")
-    print(f"Reasoning effort: {reasoning_effort}")
+    print(f"Estimated cost: ${estimated_costs['total_cost']:.4f} (before flex discount)")
+    print(f"Reasoning: {reasoning_effort} | Tier: {service_tier}")
     
-    try:
-        response = client.with_options(timeout=300).responses.create(
+    def _call(tier):
+        return client.with_options(timeout=900).responses.create(
             model=model,
             instructions="You are a high IQ expert financial engineer.",
             input=prompt,
             reasoning={"effort": reasoning_effort},
+            service_tier=tier,
         )
-        
-        # Calculate actual cost from usage
-        actual_prompt_tokens = response.usage.input_tokens
-        actual_completion_tokens = response.usage.output_tokens
-        
-        # Log token breakdown (reasoning tokens are billed as output tokens)
-        reasoning_tokens = getattr(response.usage.output_tokens_details, 'reasoning_tokens', 0) or 0
-        visible_tokens = actual_completion_tokens - reasoning_tokens
-        cached_input = getattr(response.usage.input_tokens_details, 'cached_tokens', 0) or 0
-        
-        actual_costs = calculate_actual_cost(
-            actual_prompt_tokens, 
-            actual_completion_tokens, 
-            model
-        )
-        
-        print(f"Tokens — input: {actual_prompt_tokens:,} (cached: {cached_input:,}) | output: {visible_tokens:,} | reasoning: {reasoning_tokens:,}")
-        print(f"Actual cost: ${actual_costs['total_cost']:.4f}")
-        
-        return response.output_text
+    
+    try:
+        response = _call(service_tier)
         
     except RateLimitError as e:
-        print(f"Rate limited: {e}")
-        print("Waiting 30s and retrying...")
-        import time
-        time.sleep(30)
-        try:
-            response = client.with_options(timeout=300).responses.create(
-                model=model,
-                instructions="You are a high IQ expert financial engineer.",
-                input=prompt,
-                reasoning={"effort": reasoning_effort},
-            )
-            return response.output_text
-        except Exception as e2:
-            print(f"Retry failed: {e2}")
-            return None
+        if service_tier == "flex":
+            print(f"Flex unavailable, falling back to standard: {e}")
+            try:
+                response = _call("auto")
+            except Exception as e2:
+                print(f"Standard fallback also failed: {e2}")
+                return None
+        else:
+            print(f"Rate limited: {e}")
+            import time
+            time.sleep(30)
+            try:
+                response = _call(service_tier)
+            except Exception as e2:
+                print(f"Retry failed: {e2}")
+                return None
+                
     except APITimeoutError as e:
         print(f"Request timed out: {e}")
         return None
     except Exception as e:
         print(f"Error: {e}")
         return None
+    
+    # Calculate actual cost from usage
+    actual_prompt_tokens = response.usage.input_tokens
+    actual_completion_tokens = response.usage.output_tokens
+    
+    # Log token breakdown (reasoning tokens are billed as output tokens)
+    reasoning_tokens = getattr(response.usage.output_tokens_details, 'reasoning_tokens', 0) or 0
+    visible_tokens = actual_completion_tokens - reasoning_tokens
+    cached_input = getattr(response.usage.input_tokens_details, 'cached_tokens', 0) or 0
+    used_tier = getattr(response, 'service_tier', service_tier)
+    
+    actual_costs = calculate_actual_cost(
+        actual_prompt_tokens, 
+        actual_completion_tokens, 
+        model
+    )
+    
+    # Flex is ~50% off standard rates
+    discount = " (~50% off with flex)" if used_tier == "flex" else ""
+    print(f"Tokens — input: {actual_prompt_tokens:,} (cached: {cached_input:,}) | output: {visible_tokens:,} | reasoning: {reasoning_tokens:,}")
+    print(f"Actual cost: ${actual_costs['total_cost']:.4f}{discount} | Tier: {used_tier}")
+    
+    return response.output_text, actual_costs['total_cost']
 
 def get_multi_year_trends(company):
     """Fetch multi-year financial trends from XBRL EntityFacts.
@@ -124,6 +133,9 @@ def process_filing(ticker, filing, company=None):
     """Process a single filing and return the expert and missing analyses"""
     print(f"Processing filing: {filing.accession_no} ({filing.form}, {filing.filing_date})")
     
+    # Sanitize form name for filenames (e.g. 10-K/A -> 10-KA)
+    safe_form = filing.form.replace("/", "")
+    
     try:
         # Get filing text as markdown (preserves headings, tables, structure)
         filing_text = filing.markdown()
@@ -131,7 +143,7 @@ def process_filing(ticker, filing, company=None):
         
         # Save raw filing text
         os.makedirs(os.path.join("data", "filings"), exist_ok=True)
-        raw_filename = f"{ticker}-{filing.form}-{filing.filing_date}-raw.md"
+        raw_filename = f"{ticker}-{safe_form}-{filing.filing_date}-raw.md"
         with open(os.path.join("data", "filings", raw_filename), "w", encoding='utf-8') as f:
             f.write(filing_text)
         print(f"Raw filing saved to {raw_filename}")
@@ -144,7 +156,7 @@ def process_filing(ticker, filing, company=None):
             if trend_context:
                 print(f"Added {count_tokens(trend_context):,} tokens of historical context")
                 # Save trend context for reference
-                trend_filename = f"{ticker}-{filing.form}-{filing.filing_date}-xbrl-trends.md"
+                trend_filename = f"{ticker}-{safe_form}-{filing.filing_date}-xbrl-trends.md"
                 with open(os.path.join("data", "filings", trend_filename), "w", encoding='utf-8') as f:
                     f.write(trend_context)
                 print(f"XBRL trends saved to {trend_filename}")
@@ -156,14 +168,15 @@ def process_filing(ticker, filing, company=None):
         expert_prompt = expert_analysis_prompt_template.format(
             filing_text=filing_text + trend_context
         )
-        expert_analysis = run_analysis(expert_prompt)
+        expert_result = run_analysis(expert_prompt, reasoning_effort="high")
+        expert_analysis, expert_cost = expert_result if expert_result else (None, 0)
         
         if not expert_analysis:
-            return None, None
+            return None, None, 0
             
         # Save expert analysis
         os.makedirs(os.path.join("data", "filings"), exist_ok=True)
-        expert_filename = f"{ticker}-{filing.form}-{filing.filing_date}-expert-analysis.md"
+        expert_filename = f"{ticker}-{safe_form}-{filing.filing_date}-expert-analysis.md"
         with open(os.path.join("data", "filings", expert_filename), "w", encoding='utf-8') as f:
             f.write(expert_analysis)
         print(f"Expert analysis saved to {expert_filename}")
@@ -174,20 +187,23 @@ def process_filing(ticker, filing, company=None):
             expert_analysis=expert_analysis,
             filing_text=filing_text
         )
-        missing_analysis = run_analysis(missing_prompt)
+        missing_result = run_analysis(missing_prompt)
+        missing_analysis, missing_cost = missing_result if missing_result else (None, 0)
+        
+        total_cost = expert_cost + missing_cost
         
         if missing_analysis:
             # Save missing analysis
-            missing_filename = f"{ticker}-{filing.form}-{filing.filing_date}-missing-analysis.md"
+            missing_filename = f"{ticker}-{safe_form}-{filing.filing_date}-missing-analysis.md"
             with open(os.path.join("data", "filings", missing_filename), "w", encoding='utf-8') as f:
                 f.write(missing_analysis)
             print(f"Missing analysis saved to {missing_filename}")
             
-        return expert_analysis, missing_analysis
+        return expert_analysis, missing_analysis, total_cost
         
     except Exception as e:
         print(f"Could not process filing {filing.accession_no}: {e}")
-        return None, None
+        return None, None, 0
 
 def process_transcript(ticker):
     """Process transcript and return the analysis"""
@@ -214,7 +230,8 @@ def process_transcript(ticker):
     # Run transcript analysis
     print("\n--- Running Transcript Analysis ---")
     transcript_prompt = transcript_prompt_template.format(transcript_text=transcript_text)
-    transcript_analysis = run_analysis(transcript_prompt)
+    result = run_analysis(transcript_prompt)
+    transcript_analysis, cost = result if result else (None, 0)
     
     if transcript_analysis:
         # Save transcript analysis
@@ -223,32 +240,56 @@ def process_transcript(ticker):
             f.write(transcript_analysis)
         print(f"Transcript analysis saved to {transcript_analysis_filename}")
         
-    return transcript_analysis
+    return transcript_analysis, cost
 
-def create_final_analysis(ticker, expert_analysis, missing_analysis, transcript_analysis):
-    """Create the final analysis from all components"""
-    if not (expert_analysis and missing_analysis and transcript_analysis):
-        print("Missing required analyses for final report")
-        return
+def create_final_analysis(ticker, expert_analysis, missing_analysis, transcript_analysis=None, filing_date=None, transcript_date=None):
+    """Create the final analysis from all components. Transcript is optional."""
+    if not (expert_analysis and missing_analysis):
+        print("Missing required filing analyses for final report")
+        return 0
         
     print("\n--- Running Final Analysis ---")
     
-    # Format the final prompt with the three analyses
+    # Build date context for the synthesis prompt
+    date_parts = []
+    if filing_date:
+        date_parts.append(f"The SEC filing was filed on {filing_date}.")
+    if transcript_date:
+        date_parts.append(f"The earnings call transcript is from {transcript_date}.")
+    if filing_date and transcript_date and str(filing_date) != str(transcript_date):
+        date_parts.append("Note: The filing and transcript may cover different reporting periods. Flag any data that may be outdated or mismatched.")
+    date_context = " ".join(date_parts) if date_parts else ""
+    
+    # Build transcript sections conditionally
+    if transcript_analysis:
+        transcript_intro = ", and finally a report on the earnings call transcript"
+        transcript_section = f"\n\nThe third report analysis (earnings call transcript) is:\n\n{transcript_analysis}"
+    else:
+        transcript_intro = ""
+        transcript_section = "\n\nNote: No earnings call transcript was available for this company. Base the final report on the filing analyses only."
+    
+    # Format the final prompt
     final_prompt = final_juice_prompt_template.format(
         expert_analysis=expert_analysis,
         missing_analysis=missing_analysis,
-        transcript_analysis=transcript_analysis
+        transcript_intro=transcript_intro,
+        transcript_section=transcript_section,
+        date_context=date_context
     )
     
-    final_analysis = run_analysis(final_prompt)
+    result = run_analysis(final_prompt)
+    final_analysis, cost = result if result else (None, 0)
     
     if final_analysis:
-        # Save markdown version
+        # Save markdown and HTML intermediates to a subfolder
+        intermediate_dir = os.path.join("data", "intermediate")
+        os.makedirs(intermediate_dir, exist_ok=True)
+        
         md_filename = f"{ticker}_final_report.md"
-        md_path = os.path.join("data", md_filename)
+        md_path = os.path.join(intermediate_dir, md_filename)
         with open(md_path, "w", encoding='utf-8') as f:
             f.write(final_analysis)
-        print(f"Final analysis saved to {md_filename}")
+        print(f"Final analysis saved to intermediate/{md_filename}")
         
         # Convert to styled HTML + PDF
         try:
@@ -335,12 +376,12 @@ def create_final_analysis(ticker, expert_analysis, missing_analysis, transcript_
 </body>
 </html>"""
             
-            # Save HTML version (looks great in any browser)
+            # Save HTML to intermediate folder
             html_filename = f"{ticker}_final_report.html"
-            html_path = os.path.join("data", html_filename)
+            html_path = os.path.join(intermediate_dir, html_filename)
             with open(html_path, "w", encoding='utf-8') as f:
                 f.write(full_html)
-            print(f"HTML version saved to {html_filename}")
+            print(f"HTML version saved to intermediate/{html_filename}")
             
             # Generate PDF via headless Chrome (reuses Selenium already installed for transcripts)
             try:
@@ -371,31 +412,58 @@ def create_final_analysis(ticker, expert_analysis, missing_analysis, transcript_
                 
                 driver.quit()
                 
+                # PDF goes to data/ root — the main deliverable
                 pdf_filename = f"{ticker}_final_report.pdf"
                 pdf_path = os.path.join("data", pdf_filename)
                 with open(pdf_path, "wb") as f:
                     f.write(base64.b64decode(pdf_data["data"]))
-                print(f"PDF version saved to {pdf_filename}")
+                print(f"PDF saved to {pdf_filename}")
                 
             except Exception as pdf_err:
                 print(f"PDF generation failed (HTML still saved): {pdf_err}")
             
         except Exception as e:
             print(f"Error creating report: {e}")
+    
+    return cost
 
-def main():
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+def _get_latest_non_amended(company, form):
+    """Get the latest filing of the given form type, skipping amendments (e.g. 10-K/A)."""
+    filings = company.get_filings(form=form)
+    for f in filings:
+        if '/A' not in f.form:
+            return f
+    return None
+
+def analyze_ticker(ticker):
+    """Run the full analysis pipeline for a single ticker. Returns (cost, final_analysis_text)."""
+    from concurrent.futures import ThreadPoolExecutor
     import time
     
-    # Main execution
-    ticker = input("Enter ticker symbol: ").upper()
+    print(f"\n{'='*60}")
+    print(f"  Analyzing {ticker}")
+    print(f"{'='*60}")
+    
     company = Company(ticker)
-    filing = company.get_filings(form='10-Q').latest()  # Get latest 10-Q filing
+    
+    # Get the most recent non-amended filing (whichever is newer: 10-Q or 10-K)
+    latest_10q = _get_latest_non_amended(company, '10-Q')
+    latest_10k = _get_latest_non_amended(company, '10-K')
+    
+    if latest_10q and latest_10k:
+        filing = latest_10q if latest_10q.filing_date >= latest_10k.filing_date else latest_10k
+    else:
+        filing = latest_10q or latest_10k
+    
+    if not filing:
+        print(f"No 10-Q or 10-K found for {ticker}")
+        return 0, None
+    
+    print(f"Selected: {filing.form} filed {filing.filing_date}")
     print(filing)
-    # Create data directory
-    os.makedirs("data", exist_ok=True)
 
     start_time = time.time()
+    total_cost = 0
 
     # Run filing and transcript branches in parallel (they're independent)
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -403,18 +471,112 @@ def main():
         transcript_future = executor.submit(process_transcript, ticker)
 
         # Wait for both to complete
-        expert_analysis, missing_analysis = filing_future.result()
-        transcript_analysis = transcript_future.result()
+        expert_analysis, missing_analysis, filing_cost = filing_future.result()
+        transcript_result = transcript_future.result()
+        transcript_analysis, transcript_cost = transcript_result if transcript_result else (None, 0)
 
+    total_cost += filing_cost + transcript_cost
     elapsed = time.time() - start_time
     print(f"\nParallel processing completed in {elapsed:.1f}s")
 
-    # Step 3: Create final analysis after both complete
-    if expert_analysis and missing_analysis and transcript_analysis:
-        create_final_analysis(ticker, expert_analysis, missing_analysis, transcript_analysis)
+    # Final synthesis (transcript is optional)
+    final_text = None
+    if expert_analysis and missing_analysis:
+        # Extract transcript date from the transcript analysis if available
+        transcript_date = None
+        if transcript_analysis:
+            # Try to extract date from first few lines of transcript analysis
+            for line in transcript_analysis.split('\n')[:20]:
+                if 'call date' in line.lower() or 'date' in line.lower():
+                    transcript_date = line.strip()
+                    break
+        
+        final_cost = create_final_analysis(
+            ticker, expert_analysis, missing_analysis,
+            transcript_analysis=transcript_analysis,
+            filing_date=filing.filing_date,
+            transcript_date=transcript_date
+        )
+        total_cost += final_cost
+        
+        # Read back the final report for batch comparison
+        final_md_path = os.path.join("data", "intermediate", f"{ticker}_final_report.md")
+        if os.path.exists(final_md_path):
+            with open(final_md_path, "r", encoding='utf-8') as f:
+                final_text = f.read()
 
     total_elapsed = time.time() - start_time
-    print(f"\n--- Analysis Complete ({total_elapsed:.1f}s total) ---")
+    print(f"\n--- {ticker} Complete ({total_elapsed:.1f}s) | Cost: ${total_cost:.4f} ---")
+    return total_cost, final_text
+
+def main():
+    import time
+    
+    # Accept comma-separated tickers (e.g. "AAPL, SNAP, ATAI")
+    raw = input("Enter ticker(s) (comma-separated): ").upper()
+    tickers = [t.strip() for t in raw.split(",") if t.strip()]
+    
+    if not tickers:
+        print("No tickers provided.")
+        return
+    
+    os.makedirs("data", exist_ok=True)
+    
+    start_time = time.time()
+    cost_log = {}  # ticker -> cost
+    final_reports = {}  # ticker -> final report text
+    
+    for ticker in tickers:
+        try:
+            cost, final_text = analyze_ticker(ticker)
+            cost_log[ticker] = cost
+            if final_text:
+                final_reports[ticker] = final_text
+        except Exception as e:
+            print(f"\n--- {ticker} FAILED: {e} ---")
+            cost_log[ticker] = 0
+    
+    # Cost summary table
+    total_cost = sum(cost_log.values())
+    total_elapsed = time.time() - start_time
+    
+    print(f"\n{'='*60}")
+    print(f"  Cost Summary")
+    print(f"{'='*60}")
+    for t, c in cost_log.items():
+        status = "✓" if t in final_reports else "✗"
+        print(f"  {status} {t:8s}  ${c:.4f}")
+    print(f"  {'─'*24}")
+    print(f"  Total:    ${total_cost:.4f}")
+    print(f"  Time:     {total_elapsed:.1f}s")
+    print(f"{'='*60}")
+    
+    # Batch comparison (only when multiple tickers with reports)
+    if len(final_reports) > 1:
+        print(f"\n--- Running Batch Comparison ({len(final_reports)} tickers) ---")
+        all_reports_text = "\n\n".join(
+            f"--- {t} ---\n{report}" for t, report in final_reports.items()
+        )
+        comparison_prompt = batch_comparison_prompt_template.format(
+            ticker_count=len(final_reports),
+            all_reports=all_reports_text
+        )
+        result = run_analysis(comparison_prompt)
+        comparison, comp_cost = result if result else (None, 0)
+        
+        if comparison:
+            intermediate_dir = os.path.join("data", "intermediate")
+            os.makedirs(intermediate_dir, exist_ok=True)
+            comp_filename = "batch_comparison.md"
+            with open(os.path.join(intermediate_dir, comp_filename), "w", encoding='utf-8') as f:
+                f.write(comparison)
+            print(f"Batch comparison saved to intermediate/{comp_filename}")
+            total_cost += comp_cost
+            print(f"Comparison cost: ${comp_cost:.4f}")
+    
+    print(f"\n{'='*60}")
+    print(f"  All done — {len(tickers)} ticker(s) | ${total_cost:.4f} | {total_elapsed:.1f}s")
+    print(f"{'='*60}")
 
 # Run the main function
 if __name__ == "__main__":
