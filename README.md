@@ -98,14 +98,19 @@ source venv/bin/activate
 python main.py
 ```
 
-Enter one or more ticker symbols (comma-separated). The pipeline will:
+```
+Enter ticker(s) (comma-separated): AAPL
+```
 
-1. Fetch the latest 10-K or 10-Q from SEC EDGAR (whichever is newer, skipping amendments)
-2. Pull 4-year historical financials from XBRL
-3. Scrape the latest earnings call transcript from roic.ai (optional — reports still generated if unavailable)
-4. Run 4 GPT-5.4 analysis stages using **flex processing** (~50% off, auto-fallback to standard if unavailable)
-5. Generate a final report with **investment conclusion** (bull/bear case + stance)
-6. If multiple tickers: produce a **batch comparison** ranking all companies
+or for multiple:
+
+```
+Enter ticker(s) (comma-separated): AAPL, SNAP, ATAI
+```
+
+Single ticker → one PDF report with investment conclusion (bull/bear case).
+
+Multiple tickers → one PDF per ticker + a batch comparison ranking saved to `data/intermediate/batch_comparison.md`.
 
 ### Output
 
