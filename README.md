@@ -10,30 +10,30 @@ An automated equity research pipeline that pulls SEC filings and earnings call t
 │            (comma-separated, e.g. AAPL, SNAP)           │
 └─────────────────────┬───────────────────────────────────┘
                       │  (per ticker)
-          ┌───────────┴───────────┐
-          ▼                       ▼
-   ┌──────────────┐      ┌───────────────┐
-   │ Branch 1:    │      │ Branch 2:     │
-   │ SEC Filing   │      │ Transcript    │
-   │              │      │               │
-   │ 1. Latest    │      │ 1. Scrape     │
-   │    10-K/10-Q │      │    roic.ai    │
-   │    (auto)    │      │    (optional) │
-   │              │      │               │
-   │ 2. XBRL      │      │ 2. GPT-5.4    │
-   │    4-year    │      │    analyze    │
-   │    trends    │      │    transcript │
-   │              │      │               │
-   │ 3. Expert    │      └───────┬───────┘
-   │    Analysis  │              │
-   │    (high)    │              │
-   │              │              │
-   │ 4. Missing   │              │
-   │    Analysis  │              │
-   └──────┬───────┘              │
-          │                      │
-          └──────────┬───────────┘
-                     ▼
+          ┌───────────┼───────────────┐
+          ▼           ▼               ▼
+   ┌──────────────┐ ┌───────────────┐ ┌───────────────┐
+   │ Branch 1:    │ │ Branch 2:     │ │ Branch 3:     │
+   │ SEC Filing   │ │ Transcript    │ │ Insider Trades│
+   │              │ │               │ │               │
+   │ 1. Latest    │ │ 1. Scrape     │ │ 1. Fetch      │
+   │    10-K/10-Q │ │    roic.ai    │ │    Form 4s    │
+   │    (auto)    │ │    (optional) │ │    (6 months) │
+   │              │ │               │ │               │
+   │ 2. XBRL      │ │ 2. GPT-5.4   │ │ 2. Filter     │
+   │    4-year    │ │    analyze    │ │    buys/sells │
+   │    trends    │ │    transcript │ │    only       │
+   │              │ │               │ │               │
+   │ 3. Expert    │ └───────┬───────┘ └───────┬───────┘
+   │    Analysis  │         │                 │
+   │    (high)    │         │                 │
+   │              │         │                 │
+   │ 4. Missing   │         │                 │
+   │    Analysis  │         │                 │
+   └──────┬───────┘         │                 │
+          │                 │                 │
+          └────────┬────────┴─────────────────┘
+                   ▼
           ┌─────────────────────┐
           │ GPT-5.4 Final       │
           │ Synthesis + Bull/   │
@@ -50,7 +50,7 @@ An automated equity research pipeline that pulls SEC filings and earnings call t
           └─────────────────────┘
 ```
 
-Both branches run **in parallel** using threads — the transcript analysis completes while the filing analysis is still processing.
+All three branches run **in parallel** using threads.
 
 ## Setup
 
@@ -123,7 +123,8 @@ data/
 │   ├── {TICKER}-10-K-{DATE}-raw.md                # Raw SEC filing
 │   ├── {TICKER}-10-K-{DATE}-xbrl-trends.md        # 4-year financial trends
 │   ├── {TICKER}-10-K-{DATE}-expert-analysis.md    # Expert analysis
-│   └── {TICKER}-10-K-{DATE}-missing-analysis.md   # Missing info check
+│   ├── {TICKER}-10-K-{DATE}-missing-analysis.md   # Missing info check
+│   └── {TICKER}-insider-activity.md               # Form 4 insider buys/sells
 ├── transcripts/
 │   ├── {TICKER}_transcript.md                     # Transcript markdown
 │   └── {TICKER}-transcript-analysis.md            # Transcript analysis
@@ -141,6 +142,7 @@ data/
 |--------|---------|---------------|
 | SEC EDGAR | `edgartools` v5.30.0 | Latest 10-K or 10-Q (auto, skips amendments) |
 | SEC XBRL | `edgartools` EntityFacts | 4-year income statement + balance sheet |
+| SEC Form 4 | `edgartools` | Insider buys/sells (6-month window around filing) |
 | roic.ai | `selenium` + stealth | Latest earnings call transcript (optional) |
 
 ### Analysis Pipeline
@@ -150,7 +152,7 @@ data/
 | Expert Analysis | GPT-5.4 | **High** | Deep analysis of filing + historical trends |
 | Missing Analysis | GPT-5.4 | Medium | Identify gaps in expert analysis vs raw filing |
 | Transcript Analysis | GPT-5.4 | Medium | Extract insights from earnings call |
-| Final Synthesis | GPT-5.4 | Medium | Merge all analyses, produce bull/bear case |
+| Final Synthesis | GPT-5.4 | Medium | Merge all analyses + insider signals, produce bull/bear case |
 | Batch Comparison | GPT-5.4 | Medium | Rank and compare tickers (multi-ticker only) |
 
 All calls use **flex processing** by default (~50% off standard pricing). If flex capacity is unavailable, requests automatically fall back to standard.
@@ -159,6 +161,7 @@ All calls use **flex processing** by default (~50% off standard pricing). If fle
 
 - **`filing.markdown()` over `filing.text()`**: Preserves table structure, headings, and section hierarchy for better LLM comprehension
 - **XBRL multi-year trends**: Injects 4-year financial history the LLM couldn't see from a single filing
+- **Insider trading signals**: Form 4 buys/sells are injected as raw data into the final synthesis — no extra LLM call, the model cross-references insider behavior with filing timeline
 - **Flex processing**: Batch API rates (~50% off) with automatic fallback to standard on 429
 - **`reasoning: high` for expert**: The main filing analysis gets deeper reasoning; other stages use medium
 - **Optional transcripts**: Reports are generated even when no earnings call is available

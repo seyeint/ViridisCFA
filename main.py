@@ -129,6 +129,107 @@ def get_multi_year_trends(company):
         print(f"Could not fetch multi-year trends: {e}")
         return ""
 
+def get_insider_activity(company, filing_date, max_filings=40):
+    """Fetch recent insider transactions (Form 4) and return a formatted summary.
+    Only includes market buys/sells — filters out tax withholding, gifts, awards.
+    Window: 6 months before filing date to present."""
+    from datetime import datetime, timedelta
+    
+    try:
+        filings = company.get_filings(form='4')
+        if not filings or len(filings) == 0:
+            return ""
+        
+        # Parse filing_date for window calculation
+        if isinstance(filing_date, str):
+            ref_date = datetime.strptime(filing_date, '%Y-%m-%d').date()
+        else:
+            ref_date = filing_date
+        
+        window_start = ref_date - timedelta(days=180)
+        
+        transactions = []
+        processed = 0
+        
+        for f in filings:
+            if processed >= max_filings:
+                break
+            if '/A' in f.form:
+                continue
+            
+            # Only look at filings within our window
+            f_date = f.filing_date
+            if hasattr(f_date, 'date'):
+                f_date = f_date.date()
+            elif isinstance(f_date, str):
+                f_date = datetime.strptime(f_date, '%Y-%m-%d').date()
+            
+            if f_date < window_start:
+                break  # Filings are reverse chronological, so we can stop
+            
+            processed += 1
+            
+            try:
+                obj = f.obj()
+                df = obj.to_dataframe()
+                if df is None or len(df) == 0:
+                    continue
+                
+                for _, row in df.iterrows():
+                    code = row.get('Code', '')
+                    # P = Purchase, S = Sale (market transactions)
+                    if code in ('P', 'S'):
+                        txn_type = 'BUY' if code == 'P' else 'SELL'
+                        shares = row.get('Shares', 0)
+                        price = row.get('Price', 0)
+                        value = row.get('Value', 0)
+                        remaining = row.get('Remaining Shares', 'N/A')
+                        txn_date = row.get('Date', f.filing_date)
+                        
+                        transactions.append({
+                            'date': str(txn_date).split(' ')[0],  # Strip time component
+                            'insider': obj.insider_name,
+                            'position': obj.position,
+                            'type': txn_type,
+                            'shares': int(shares) if shares else 0,
+                            'price': float(price) if price else 0,
+                            'value': float(value) if value else 0,
+                            'remaining': remaining,
+                        })
+            except Exception:
+                continue
+        
+        if not transactions:
+            return ""
+        
+        # Sort by date descending
+        transactions.sort(key=lambda x: x['date'], reverse=True)
+        
+        # Compute summary stats
+        total_buys = sum(t['value'] for t in transactions if t['type'] == 'BUY')
+        total_sells = sum(t['value'] for t in transactions if t['type'] == 'SELL')
+        buy_count = sum(1 for t in transactions if t['type'] == 'BUY')
+        sell_count = sum(1 for t in transactions if t['type'] == 'SELL')
+        unique_insiders = set(t['insider'] for t in transactions)
+        
+        # Format output
+        lines = []
+        lines.append(f"INSIDER TRADING ACTIVITY (Form 4 — last 6 months relative to {ref_date})")
+        lines.append(f"Summary: {buy_count} buy transaction(s) totaling ${total_buys:,.0f} | {sell_count} sell transaction(s) totaling ${total_sells:,.0f}")
+        lines.append(f"Unique insiders with market transactions: {len(unique_insiders)}")
+        lines.append("")
+        lines.append("Date | Insider | Position | Action | Shares | Price | Value")
+        lines.append("--- | --- | --- | --- | --- | --- | ---")
+        
+        for t in transactions:
+            lines.append(f"{t['date']} | {t['insider']} | {t['position']} | {t['type']} | {t['shares']:,} | ${t['price']:.2f} | ${t['value']:,.0f}")
+        
+        return "\n".join(lines)
+    
+    except Exception as e:
+        print(f"Could not fetch insider activity: {e}")
+        return ""
+
 def process_filing(ticker, filing, company=None):
     """Process a single filing and return the expert and missing analyses"""
     print(f"Processing filing: {filing.accession_no} ({filing.form}, {filing.filing_date})")
@@ -242,8 +343,8 @@ def process_transcript(ticker):
         
     return transcript_analysis, cost
 
-def create_final_analysis(ticker, expert_analysis, missing_analysis, transcript_analysis=None, filing_date=None, transcript_date=None):
-    """Create the final analysis from all components. Transcript is optional."""
+def create_final_analysis(ticker, expert_analysis, missing_analysis, transcript_analysis=None, filing_date=None, transcript_date=None, insider_activity=None):
+    """Create the final analysis from all components. Transcript and insider data are optional."""
     if not (expert_analysis and missing_analysis):
         print("Missing required filing analyses for final report")
         return 0
@@ -267,6 +368,10 @@ def create_final_analysis(ticker, expert_analysis, missing_analysis, transcript_
     else:
         transcript_intro = ""
         transcript_section = "\n\nNote: No earnings call transcript was available for this company. Base the final report on the filing analyses only."
+    
+    # Build insider activity section
+    if insider_activity:
+        transcript_section += f"\n\n--- INSIDER TRADING ACTIVITY (SEC Form 4) ---\n\n{insider_activity}\n\n--- END INSIDER ACTIVITY ---\n\nImportant: Cross-reference the insider trading dates and patterns with the filing date and any material events. Coordinated selling by multiple insiders around key dates, or insider buying during weakness, are particularly significant signals to highlight in the Investment Conclusion."
     
     # Format the final prompt
     final_prompt = final_juice_prompt_template.format(
@@ -465,19 +570,33 @@ def analyze_ticker(ticker):
     start_time = time.time()
     total_cost = 0
 
-    # Run filing and transcript branches in parallel (they're independent)
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    # Run filing, transcript, and insider data in parallel (they're independent)
+    with ThreadPoolExecutor(max_workers=3) as executor:
         filing_future = executor.submit(process_filing, ticker, filing, company)
         transcript_future = executor.submit(process_transcript, ticker)
+        insider_future = executor.submit(get_insider_activity, company, filing.filing_date)
 
-        # Wait for both to complete
+        # Wait for all to complete
         expert_analysis, missing_analysis, filing_cost = filing_future.result()
         transcript_result = transcript_future.result()
         transcript_analysis, transcript_cost = transcript_result if transcript_result else (None, 0)
+        insider_activity = insider_future.result()
 
     total_cost += filing_cost + transcript_cost
     elapsed = time.time() - start_time
     print(f"\nParallel processing completed in {elapsed:.1f}s")
+    
+    if insider_activity:
+        insider_lines = insider_activity.count('\n')
+        print(f"Insider activity: {insider_lines} transactions found")
+        # Save raw insider data alongside other filing artifacts
+        os.makedirs(os.path.join("data", "filings"), exist_ok=True)
+        insider_filename = f"{ticker}-insider-activity.md"
+        with open(os.path.join("data", "filings", insider_filename), "w", encoding='utf-8') as f:
+            f.write(insider_activity)
+        print(f"Insider activity saved to filings/{insider_filename}")
+    else:
+        print("No insider market transactions found")
 
     # Final synthesis (transcript is optional)
     final_text = None
@@ -495,7 +614,8 @@ def analyze_ticker(ticker):
             ticker, expert_analysis, missing_analysis,
             transcript_analysis=transcript_analysis,
             filing_date=filing.filing_date,
-            transcript_date=transcript_date
+            transcript_date=transcript_date,
+            insider_activity=insider_activity
         )
         total_cost += final_cost
         
