@@ -106,11 +106,20 @@ Output Format: Present the analysis clearly using Markdown for headings and bull
 """
 
 expert_analysis_prompt_template = """
-Instruction: You are an expert financial analyst. Analyze the following SEC filing text provided below. Your analysis must be based exclusively on the information contained within this document. Do not incorporate any external data, real-time information (like current stock prices unless mentioned in the text), or prior knowledge about the company not present in this specific filing.
+Instruction: You are an expert financial analyst. Analyze the following SEC filing text and the programmatic quantitative scorecard provided below. Your analysis must be based exclusively on the information contained within these sources. Do not incorporate any external data, real-time information, or prior knowledge about the company not present in these sources.
 
 The filing text is:
 
 {filing_text}
+
+Here is the programmatic quantitative scorecard extracted directly from verified SEC XBRL facts:
+
+{quant_scorecard}
+
+CRITICAL VERIFICATION RULES:
+1. The scorecard above represents mathematically exact GAAP metrics calculated programmatically from verified XBRL facts. Do NOT alter, recalculate, or contradict any values in this table.
+2. If any metric is marked as "UNABLE TO COMPUTE" or "MISSING - Footnotes Search Required", you MUST scan the filing text (including footnote disclosures) to see if the company discloses these values or explains their absence. If found, highlight them in your report.
+3. Under no circumstances should you invent, estimate, or hallucinate any financial figures. If a metric is missing from both the programmatic scorecard and the filing text, state clearly that the company did not disclose it in the public filing.
 
 Analysis Task: Generate a structured report summarizing the key information from the filing. Use the following sections:
 
@@ -129,7 +138,8 @@ Analysis Task: Generate a structured report summarizing the key information from
    - List and briefly summarize the most significant risks disclosed by the company in this filing.
    - Group risks into logical categories if possible (e.g., operational, financial, market, regulatory, strategic).
 
-4. Management's Discussion and Analysis (MD&A) (Derived primarily from Item 7 in 10-K/Part I, Item 2 in 10-Q):
+4. Management's Discussion and Analysis (MD&A) & Quantitative Insights:
+   - Integrate the **Deterministic Financial Engineering Scorecard** trends (Altman Z-Score, Piotroski F-Score, Beneish M-Score) into your analysis of the company's solvency, liquidity, and earnings quality.
    - Summarize management's commentary on financial results (Revenue, Profitability, Key Segment Performance) for the period covered.
    - Highlight key trends, drivers, and challenges discussed by management.
    - Summarize the discussion on Liquidity (cash position, cash flows, debt) and Capital Resources (funding sources, capital expenditures).
@@ -138,9 +148,10 @@ Analysis Task: Generate a structured report summarizing the key information from
 5. Quantitative and Qualitative Disclosures About Market Risk (Derived primarily from Item 7A in 10-K/Part I, Item 3 in 10-Q):
    - Summarize the company's primary market risk exposures (e.g., interest rate, foreign currency, commodity price) and how they are managed, based on the disclosures.
 
-6. Financial Statements Insights (Derived primarily from Item 8 in 10-K/Part I, Item 1 in 10-Q and Notes):
-   - Provide a high-level overview of major changes or trends visible in the Balance Sheet, Income Statement, and Cash Flow Statement presented in the filing. (Focus on narrative summary, not just numbers).
-   - Summarize any particularly significant information disclosed in the Notes to the Financial Statements (e.g., major acquisitions, divestitures, significant debt agreements, new accounting standards adopted, segment reporting changes, material contingencies).
+6. Financial Statements Insights & Footnote Audit:
+   - Provide a high-level overview of major changes or trends visible in the Balance Sheet, Income Statement, and Cash Flow Statement presented in the filing.
+   - Conduct a Footnote Audit based on the notes: highlight major acquisitions, divestitures, significant debt agreements, segment reporting changes, or material contingencies.
+   - Address any missing or incomplete quantitative metrics from the scorecard by auditing the footnotes for details.
 
 7. Legal Proceedings (Derived primarily from Item 3 in 10-K/Part I, Item 2 in 10-Q):
    - Summarize any material legal proceedings disclosed in this filing.
@@ -149,5 +160,5 @@ Analysis Task: Generate a structured report summarizing the key information from
    - State management's conclusion on the effectiveness of disclosure controls and procedures.
    - For 10-Ks, state management's assessment of internal control over financial reporting (ICFR) and the auditor's attestation, if provided.
 
-Output Format: Present the analysis clearly using Markdown for headings and bullet points. Ensure all information is strictly derived from the provided filing text.
+Output Format: Present the analysis clearly using Markdown for headings and bullet points. Ensure all information is strictly derived from the provided filing text and programmatic scorecard.
 """

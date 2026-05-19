@@ -1,6 +1,6 @@
 # ViridisCFA — AI-Powered Equity Research Pipeline
 
-An automated equity research pipeline that pulls SEC filings and earnings call transcripts, runs multi-stage AI analysis using GPT-5.4 with flex processing (~50% cheaper), and produces synthesized investment reports with bull/bear cases.
+An automated equity research pipeline that pulls SEC filings and earnings call transcripts, runs a local deterministic quantitative financial scorecard, crawls insider Form 4 activity (discriminating pre-scheduled 10b5-1 plans), runs multi-stage AI analysis using GPT-5.4 with flex processing (~50% cheaper), and produces synthesized investment reports with bull/bear cases.
 
 ## How It Works
 
@@ -8,6 +8,7 @@ An automated equity research pipeline that pulls SEC filings and earnings call t
 ┌─────────────────────────────────────────────────────────┐
 │               User enters ticker(s)                     │
 │            (comma-separated, e.g. AAPL, SNAP)           │
+│           (optionally appends --no-cache)               │
 └─────────────────────┬───────────────────────────────────┘
                       │  (per ticker)
           ┌───────────┼───────────────┐
@@ -18,15 +19,17 @@ An automated equity research pipeline that pulls SEC filings and earnings call t
    │              │ │               │ │               │
    │ 1. Latest    │ │ 1. Scrape     │ │ 1. Fetch      │
    │    10-K/10-Q │ │    roic.ai    │ │    Form 4s    │
-   │    (auto)    │ │    (optional) │ │    (6 months) │
-   │              │ │               │ │               │
-   │ 2. XBRL      │ │ 2. GPT-5.4   │ │ 2. Filter     │
-   │    4-year    │ │    analyze    │ │    buys/sells │
-   │    trends    │ │    transcript │ │    only       │
-   │              │ │               │ │               │
-   │ 3. Expert    │ └───────┬───────┘ └───────┬───────┘
+   │              │ │    (optional) │ │    (6 months) │
+   │ 2. Local     │ │               │ │               │
+   │    Scorecard │ │ 2. GPT-5.4   │ │ 2. Footnotes  │
+   │    (Altman Z'│ │    analyze    │ │    Audit      │
+   │    Piotroski │ │    transcript │ │    (Tag       │
+   │    Beneish M)│ │               │ │    10b5-1)    │
+   │              │ └───────┬───────┘ └───────┬───────┘
+   │ 3. Expert    │         │                 │
    │    Analysis  │         │                 │
-   │    (high)    │         │                 │
+   │    (reasoning│         │                 │
+   │    high)     │         │                 │
    │              │         │                 │
    │ 4. Missing   │         │                 │
    │    Analysis  │         │                 │
@@ -50,7 +53,7 @@ An automated equity research pipeline that pulls SEC filings and earnings call t
           └─────────────────────┘
 ```
 
-All three branches run **in parallel** using threads.
+All three branches run **in parallel** using threads. The local quantitative scorecard values are injected directly into the LLM synthesis prompt with strict verification rules to prevent hallucinations.
 
 ## Setup
 
@@ -95,17 +98,21 @@ Selenium requires Chrome/ChromeDriver for transcript scraping. On most systems, 
 
 ```bash
 source venv/bin/activate
+# Standard run
 python main.py
+
+# CLI Arguments (comma-separated or multiple arguments)
+python main.py AAPL
+python main.py TSLA,TTD
+
+# Bypass caching (forcing fresh calculation & LLM generation)
+python main.py TSLA --no-cache
+python main.py TSLA --force
 ```
 
+When run interactively (with no CLI arguments), you can also append `--no-cache` or `--force` directly to the prompt:
 ```
-Enter ticker(s) (comma-separated): AAPL
-```
-
-or for multiple:
-
-```
-Enter ticker(s) (comma-separated): AAPL, SNAP, ATAI
+Enter ticker(s) (comma-separated, optionally append --no-cache): AAPL --no-cache
 ```
 
 Single ticker → one PDF report with investment conclusion (bull/bear case).
@@ -160,6 +167,8 @@ All calls use **flex processing** by default (~50% off standard pricing). If fle
 ### Key Design Decisions
 
 - **`filing.markdown()` over `filing.text()`**: Preserves table structure, headings, and section hierarchy for better LLM comprehension
+- **Local Quantitative Scorecard**: Programmatically calculates Altman Z'-Score (Z-Prime), Piotroski F-Score, Beneish M-Score, and critical liquidity/leverage ratios. These ground-truth values are injected into the final synthesis prompt with verification rules to prevent LLM mathematical hallucinations.
+- **Insider 10b5-1 Discrimination**: Form 4 trades are audited using footnote scans to distinguish discretionary trades from pre-scheduled 10b5-1 executions, isolating higher-conviction signals.
 - **XBRL multi-year trends**: Injects 4-year financial history the LLM couldn't see from a single filing
 - **Insider trading signals**: Form 4 buys/sells are injected as raw data into the final synthesis — no extra LLM call, the model cross-references insider behavior with filing timeline
 - **Flex processing**: Batch API rates (~50% off) with automatic fallback to standard on 429
@@ -184,6 +193,7 @@ Cost summary is printed at the end of each run.
 
 ```
 ├── main.py               # Pipeline orchestrator
+├── quant_engine.py       # Deterministic quantitative financial scorecard
 ├── prompt_configs.py     # LLM prompt templates
 ├── utils.py              # Token counting + cost estimation
 ├── fetch_transcripts.py  # Selenium-based transcript scraper

@@ -175,6 +175,25 @@ def get_insider_activity(company, filing_date, max_filings=40):
                 if df is None or len(df) == 0:
                     continue
                 
+                # Check for 10b5-1 footnotes in the current filing
+                is_10b51_plan = False
+                if hasattr(obj, 'footnotes') and obj.footnotes:
+                    try:
+                        footnote_texts = []
+                        if isinstance(obj.footnotes, dict):
+                            footnote_texts = list(obj.footnotes.values())
+                        elif hasattr(obj.footnotes, 'values'):
+                            footnote_texts = list(obj.footnotes.values())
+                        else:
+                            footnote_texts = [str(obj.footnotes)]
+                            
+                        for text in footnote_texts:
+                            if "10b5-1" in str(text).lower() or "10b51" in str(text).lower():
+                                is_10b51_plan = True
+                                break
+                    except Exception:
+                        pass
+                
                 for _, row in df.iterrows():
                     code = row.get('Code', '')
                     # P = Purchase, S = Sale (market transactions)
@@ -186,15 +205,33 @@ def get_insider_activity(company, filing_date, max_filings=40):
                         remaining = row.get('Remaining Shares', 'N/A')
                         txn_date = row.get('Date', f.filing_date)
                         
+                        shares_num = int(shares) if shares else 0
+                        price_num = float(price) if price else 0.0
+                        value_num = float(value) if value else (shares_num * price_num)
+                        
+                        # Relativize position size %-wise
+                        pct_str = "N/A"
+                        try:
+                            if remaining is not None and str(remaining) != 'N/A':
+                                rem_shares = float(str(remaining).replace(',', ''))
+                                total_shares = shares_num + rem_shares
+                                if total_shares > 0:
+                                    sold_pct = (shares_num / total_shares) * 100
+                                    pct_str = f"{sold_pct:.2f}%"
+                        except Exception:
+                            pass
+                        
                         transactions.append({
                             'date': str(txn_date).split(' ')[0],  # Strip time component
                             'insider': obj.insider_name,
                             'position': obj.position,
                             'type': txn_type,
-                            'shares': int(shares) if shares else 0,
-                            'price': float(price) if price else 0,
-                            'value': float(value) if value else 0,
+                            'shares': shares_num,
+                            'price': price_num,
+                            'value': value_num,
                             'remaining': remaining,
+                            'is_10b51': is_10b51_plan,
+                            'pct_position': pct_str
                         })
             except Exception:
                 continue
@@ -206,23 +243,29 @@ def get_insider_activity(company, filing_date, max_filings=40):
         transactions.sort(key=lambda x: x['date'], reverse=True)
         
         # Compute summary stats
-        total_buys = sum(t['value'] for t in transactions if t['type'] == 'BUY')
-        total_sells = sum(t['value'] for t in transactions if t['type'] == 'SELL')
+        disc_buys_val = sum(t['value'] for t in transactions if t['type'] == 'BUY')
+        disc_sells_val = sum(t['value'] for t in transactions if t['type'] == 'SELL' and not t['is_10b51'])
+        sched_sells_val = sum(t['value'] for t in transactions if t['type'] == 'SELL' and t['is_10b51'])
+        
         buy_count = sum(1 for t in transactions if t['type'] == 'BUY')
-        sell_count = sum(1 for t in transactions if t['type'] == 'SELL')
+        disc_sell_count = sum(1 for t in transactions if t['type'] == 'SELL' and not t['is_10b51'])
+        sched_sell_count = sum(1 for t in transactions if t['type'] == 'SELL' and t['is_10b51'])
+        
         unique_insiders = set(t['insider'] for t in transactions)
         
         # Format output
         lines = []
-        lines.append(f"INSIDER TRADING ACTIVITY (Form 4 — last 6 months relative to {ref_date})")
-        lines.append(f"Summary: {buy_count} buy transaction(s) totaling ${total_buys:,.0f} | {sell_count} sell transaction(s) totaling ${total_sells:,.0f}")
-        lines.append(f"Unique insiders with market transactions: {len(unique_insiders)}")
+        lines.append(f"### INSIDER TRADING ACTIVITY (Form 4 — last 6 months relative to {ref_date})")
+        lines.append(f"**Discretionary Activity:** {buy_count} buy(s) totaling **${disc_buys_val:,.0f}** | {disc_sell_count} discretionary sell(s) totaling **${disc_sells_val:,.0f}**")
+        lines.append(f"**Pre-Scheduled Activity:** {sched_sell_count} 10b5-1 sell(s) totaling **${sched_sells_val:,.0f}**")
+        lines.append(f"Unique active insiders: **{len(unique_insiders)}**")
         lines.append("")
-        lines.append("Date | Insider | Position | Action | Shares | Price | Value")
-        lines.append("--- | --- | --- | --- | --- | --- | ---")
+        lines.append("Date | Insider | Position | Action | Shares | Price | Value | % Position | Type")
+        lines.append("--- | --- | --- | --- | --- | --- | --- | --- | ---")
         
         for t in transactions:
-            lines.append(f"{t['date']} | {t['insider']} | {t['position']} | {t['type']} | {t['shares']:,} | ${t['price']:.2f} | ${t['value']:,.0f}")
+            type_str = "10b5-1 (Scheduled)" if t['is_10b51'] else "Discretionary (Open Market)"
+            lines.append(f"{t['date']} | {t['insider']} | {t['position']} | {t['type']} | {t['shares']:,} | ${t['price']:.2f} | ${t['value']:,.0f} | {t['pct_position']} | {type_str}")
         
         return "\n".join(lines)
     
@@ -230,13 +273,30 @@ def get_insider_activity(company, filing_date, max_filings=40):
         print(f"Could not fetch insider activity: {e}")
         return ""
 
-def process_filing(ticker, filing, company=None):
+def process_filing(ticker, filing, company=None, no_cache=False):
     """Process a single filing and return the expert and missing analyses"""
     print(f"Processing filing: {filing.accession_no} ({filing.form}, {filing.filing_date})")
     
     # Sanitize form name for filenames (e.g. 10-K/A -> 10-KA)
     safe_form = filing.form.replace("/", "")
     
+    expert_filename = f"{ticker}-{safe_form}-{filing.filing_date}-expert-analysis.md"
+    expert_path = os.path.join("data", "filings", expert_filename)
+    
+    missing_filename = f"{ticker}-{safe_form}-{filing.filing_date}-missing-analysis.md"
+    missing_path = os.path.join("data", "filings", missing_filename)
+    
+    if not no_cache and os.path.exists(expert_path) and os.path.exists(missing_path):
+        print(f"[CACHE HIT] Found existing expert and missing analyses for {ticker} {filing.filing_date}. Loading from cache...")
+        try:
+            with open(expert_path, "r", encoding="utf-8") as f:
+                expert_analysis = f.read()
+            with open(missing_path, "r", encoding="utf-8") as f:
+                missing_analysis = f.read()
+            return expert_analysis, missing_analysis, 0.0
+        except Exception as cache_err:
+            print(f"Failed to read cache: {cache_err}. Proceeding with fresh fetch/analysis...")
+            
     try:
         # Get filing text as markdown (preserves headings, tables, structure)
         filing_text = filing.markdown()
@@ -249,8 +309,9 @@ def process_filing(ticker, filing, company=None):
             f.write(filing_text)
         print(f"Raw filing saved to {raw_filename}")
         
-        # Fetch multi-year trends to augment the prompt
+        # Fetch multi-year trends and programmatic scorecard to augment the prompt
         trend_context = ""
+        quant_scorecard_md = ""
         if company:
             print("Fetching multi-year financial trends from XBRL...")
             trend_context = get_multi_year_trends(company)
@@ -263,11 +324,27 @@ def process_filing(ticker, filing, company=None):
                 print(f"XBRL trends saved to {trend_filename}")
             else:
                 print("No historical trend data available")
+                
+            # Programmatic Scorecard Generation
+            try:
+                from quant_engine import generate_quant_scorecard
+                print("Calculating deterministic quantitative scorecard...")
+                quant_scorecard_md, _ = generate_quant_scorecard(company)
+                
+                # Save scorecard to filings folder
+                scorecard_filename = f"{ticker}-{safe_form}-{filing.filing_date}-quant-scorecard.md"
+                with open(os.path.join("data", "filings", scorecard_filename), "w", encoding='utf-8') as f:
+                    f.write(quant_scorecard_md)
+                print(f"Programmatic quant scorecard saved to {scorecard_filename}")
+            except Exception as q_e:
+                print(f"Could not calculate quant scorecard: {q_e}")
+                quant_scorecard_md = "Unable to programmatically generate quantitative scorecard."
         
         # Step 1: Expert Analysis
         print("\n--- Running Expert Analysis ---")
         expert_prompt = expert_analysis_prompt_template.format(
-            filing_text=filing_text + trend_context
+            filing_text=filing_text + trend_context,
+            quant_scorecard=quant_scorecard_md
         )
         expert_result = run_analysis(expert_prompt, reasoning_effort="high")
         expert_analysis, expert_cost = expert_result if expert_result else (None, 0)
@@ -306,15 +383,27 @@ def process_filing(ticker, filing, company=None):
         print(f"Could not process filing {filing.accession_no}: {e}")
         return None, None, 0
 
-def process_transcript(ticker):
+def process_transcript(ticker, no_cache=False):
     """Process transcript and return the analysis"""
+    transcript_analysis_filename = f"{ticker}-transcript-analysis.md"
+    transcript_analysis_path = os.path.join("data", "transcripts", transcript_analysis_filename)
+    
+    if not no_cache and os.path.exists(transcript_analysis_path):
+        print(f"[CACHE HIT] Found existing transcript analysis for {ticker}. Loading from cache...")
+        try:
+            with open(transcript_analysis_path, "r", encoding="utf-8") as f:
+                transcript_analysis = f.read()
+            return transcript_analysis, 0.0
+        except Exception as cache_err:
+            print(f"Failed to read cache: {cache_err}. Proceeding with fresh fetch/analysis...")
+            
     print("\n--- Fetching Transcript ---")
     
     html = get_transcript(ticker)
     
     if not html:
         print("No transcript found")
-        return None
+        return None, 0.0
         
     # Save HTML transcript
     os.makedirs(os.path.join("data", "transcripts"), exist_ok=True)
@@ -540,7 +629,7 @@ def _get_latest_non_amended(company, form):
             return f
     return None
 
-def analyze_ticker(ticker):
+def analyze_ticker(ticker, no_cache=False):
     """Run the full analysis pipeline for a single ticker. Returns (cost, final_analysis_text)."""
     from concurrent.futures import ThreadPoolExecutor
     import time
@@ -572,14 +661,13 @@ def analyze_ticker(ticker):
 
     # Run filing, transcript, and insider data in parallel (they're independent)
     with ThreadPoolExecutor(max_workers=3) as executor:
-        filing_future = executor.submit(process_filing, ticker, filing, company)
-        transcript_future = executor.submit(process_transcript, ticker)
+        filing_future = executor.submit(process_filing, ticker, filing, company, no_cache=no_cache)
+        transcript_future = executor.submit(process_transcript, ticker, no_cache=no_cache)
         insider_future = executor.submit(get_insider_activity, company, filing.filing_date)
 
         # Wait for all to complete
         expert_analysis, missing_analysis, filing_cost = filing_future.result()
-        transcript_result = transcript_future.result()
-        transcript_analysis, transcript_cost = transcript_result if transcript_result else (None, 0)
+        transcript_analysis, transcript_cost = transcript_future.result()
         insider_activity = insider_future.result()
 
     total_cost += filing_cost + transcript_cost
@@ -631,10 +719,31 @@ def analyze_ticker(ticker):
 
 def main():
     import time
+    import sys
     
-    # Accept comma-separated tickers (e.g. "AAPL, SNAP, ATAI")
-    raw = input("Enter ticker(s) (comma-separated): ").upper()
-    tickers = [t.strip() for t in raw.split(",") if t.strip()]
+    no_cache = False
+    args = sys.argv[1:]
+    
+    # Check for cache bypass flags in command-line arguments
+    if "--no-cache" in args:
+        no_cache = True
+        args = [arg for arg in args if arg != "--no-cache"]
+    if "--force" in args:
+        no_cache = True
+        args = [arg for arg in args if arg != "--force"]
+        
+    if len(args) > 0:
+        tickers = [t.strip().upper() for arg in args for t in arg.split(",") if t.strip()]
+    else:
+        raw = input("Enter ticker(s) (comma-separated, optionally append --no-cache): ")
+        # Parse interactive input for flags
+        if "--no-cache" in raw:
+            no_cache = True
+            raw = raw.replace("--no-cache", "")
+        if "--force" in raw:
+            no_cache = True
+            raw = raw.replace("--force", "")
+        tickers = [t.strip().upper() for t in raw.split(",") if t.strip()]
     
     if not tickers:
         print("No tickers provided.")
@@ -648,7 +757,7 @@ def main():
     
     for ticker in tickers:
         try:
-            cost, final_text = analyze_ticker(ticker)
+            cost, final_text = analyze_ticker(ticker, no_cache=no_cache)
             cost_log[ticker] = cost
             if final_text:
                 final_reports[ticker] = final_text

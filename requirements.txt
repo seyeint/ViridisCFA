@@ -11,3 +11,7 @@ html2text>=2024.2.26        # HTML to markdown conversion
 
 # Report generation
 markdown>=3.6               # Markdown to HTML for final report
+
+# Financial metrics
+pandas>=2.0.0
+numpy>=1.24.0

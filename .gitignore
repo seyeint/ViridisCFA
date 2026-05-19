@@ -30,3 +30,6 @@ test_*.txt
 # OS specific files
 .DS_Store
 Thumbs.db
+
+# Dev scratch files
+scratch/
