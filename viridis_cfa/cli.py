@@ -58,12 +58,18 @@ def main():
     print(f"\n{'='*60}")
     print(f"  Cost Summary")
     print(f"{'='*60}")
+    cache_hits = 0
     for t, c in cost_log.items():
         status = "✓" if t in final_reports else "✗"
-        print(f"  {status} {t:8s}  ${c:.4f}")
-    print(f"  {'─'*24}")
+        cache_note = " (cached)" if c == 0 and t in final_reports else ""
+        print(f"  {status} {t:8s}  ${c:.4f}{cache_note}")
+        if c == 0 and t in final_reports:
+            cache_hits += 1
+    print(f"  {'─'*30}")
     print(f"  Total:    ${total_cost:.4f}")
     print(f"  Time:     {total_elapsed:.1f}s")
+    if cache_hits > 0:
+        print(f"  Cache:    {cache_hits}/{len(cost_log)} ticker(s) served from cache")
     print(f"{'='*60}")
     
     # Batch comparison (only when multiple tickers with reports)

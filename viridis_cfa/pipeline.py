@@ -484,9 +484,31 @@ def _get_latest_non_amended(company, form):
             return f
     return None
 
+def _read_file(path):
+    """Read a text file and return its contents, or None if not found."""
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return f.read()
+    except (FileNotFoundError, IOError):
+        return None
+
+
 def analyze_ticker(ticker, no_cache=False):
-    """Run the full analysis pipeline for a single ticker. Returns (cost, final_analysis_text)."""
+    """Run the full analysis pipeline for a single ticker. Returns (cost, final_analysis_text).
+    
+    Uses ingredient-based caching: compares current data sources against a cached
+    manifest to determine which pipeline steps need re-running. Only LLM steps whose
+    inputs actually changed are re-executed. Filing freshness is checked via SEC
+    accession number (lightweight). Insider data is always re-fetched (cheap) and
+    hash-compared. Transcript is re-scraped only when the filing quarter changes or
+    no transcript was previously available.
+    """
     from concurrent.futures import ThreadPoolExecutor
+    from viridis_cfa.cache import (
+        load_manifest, save_manifest, check_artifacts_exist,
+        compute_hash, now_iso
+    )
+    from quant_engine import QUANT_ENGINE_VERSION
     
     print(f"\n{'='*60}")
     print(f"  Analyzing {ticker}")
@@ -511,27 +533,108 @@ def analyze_ticker(ticker, no_cache=False):
     print(filing)
  
     start_time = time.time()
-    total_cost = 0
- 
-    # Run filing, transcript, and insider data in parallel (they're independent)
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        filing_future = executor.submit(process_filing, ticker, filing, company, no_cache=no_cache)
-        transcript_future = executor.submit(process_transcript, ticker, no_cache=no_cache)
-        insider_future = executor.submit(get_insider_activity, company, filing.filing_date)
-
-        # Wait for all to complete
-        expert_analysis, missing_analysis, filing_cost = filing_future.result()
-        transcript_analysis, transcript_cost = transcript_future.result()
-        insider_activity = insider_future.result()
- 
-    total_cost += filing_cost + transcript_cost
-    elapsed = time.time() - start_time
-    print(f"\nParallel processing completed in {elapsed:.1f}s")
     
+    # ── Load cached manifest ──
+    manifest = None
+    cached = {}
+    if not no_cache:
+        manifest = load_manifest(ticker)
+        if manifest:
+            if not check_artifacts_exist(manifest):
+                print("[CACHE] Manifest invalid — artifact files missing. Running fresh.")
+                manifest = None
+            else:
+                cached = manifest.get('ingredients', {})
+    
+    # ── Determine staleness per ingredient ──
+    safe_form = filing.form.replace("/", "")
+    
+    filing_stale = (not manifest or
+                    cached.get('filing_accession_no') != filing.accession_no or
+                    cached.get('quant_engine_version') != QUANT_ENGINE_VERSION)
+    
+    # Transcript: re-scrape if quarter changed or no transcript was cached previously
+    transcript_stale = (filing_stale or not cached.get('transcript_hash'))
+    
+    # Log cache status
+    if no_cache:
+        print("[CACHE] Bypassed (--no-cache / --force)")
+    elif filing_stale:
+        reasons = []
+        if not manifest:
+            reasons.append("no manifest")
+        elif cached.get('filing_accession_no') != filing.accession_no:
+            reasons.append(f"new filing {filing.accession_no[:20]}...")
+        elif cached.get('quant_engine_version') != QUANT_ENGINE_VERSION:
+            reasons.append("quant engine updated")
+        print(f"[CACHE] Filing stale ({', '.join(reasons)}) — full re-analysis required")
+    elif transcript_stale:
+        print("[CACHE] Filing cached ✓ | Transcript not yet cached — will attempt scrape")
+    else:
+        print("[CACHE] Filing cached ✓ | Transcript cached ✓ | Checking insider data...")
+    
+    # ── Run pipeline branches ──
+    total_cost = 0
+    steps_run = []
+    cache_hits = []
+    
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {}
+        
+        # Branch 1: Filing analysis (only if stale)
+        if filing_stale:
+            futures['filing'] = executor.submit(
+                process_filing, ticker, filing, company, no_cache=True
+            )
+        
+        # Branch 2: Transcript (only if stale)
+        if transcript_stale:
+            futures['transcript'] = executor.submit(
+                process_transcript, ticker, no_cache=True
+            )
+        
+        # Branch 3: Insider data (always fetch — cheap, continuous updates)
+        futures['insider'] = executor.submit(
+            get_insider_activity, company, filing.filing_date
+        )
+        
+        # ── Collect filing results ──
+        if 'filing' in futures:
+            expert_analysis, missing_analysis, filing_cost = futures['filing'].result()
+            total_cost += filing_cost
+            steps_run += ['expert', 'missing']
+        else:
+            expert_analysis = _read_file(manifest['artifacts']['expert_analysis'])
+            missing_analysis = _read_file(manifest['artifacts']['missing_analysis'])
+            cache_hits += ['expert', 'missing']
+            print(f"[CACHE HIT] Reusing expert + missing analyses for {ticker}")
+        
+        # ── Collect transcript results ──
+        if 'transcript' in futures:
+            transcript_analysis, transcript_cost = futures['transcript'].result()
+            total_cost += transcript_cost
+            if transcript_analysis:
+                steps_run.append('transcript')
+        elif manifest and manifest['artifacts'].get('transcript_analysis'):
+            transcript_analysis = _read_file(manifest['artifacts']['transcript_analysis'])
+            if transcript_analysis:
+                cache_hits.append('transcript')
+                print(f"[CACHE HIT] Reusing transcript analysis for {ticker}")
+            else:
+                transcript_analysis = None
+        else:
+            transcript_analysis = None
+        
+        # ── Collect insider results (always fresh) ──
+        insider_activity = futures['insider'].result()
+    
+    elapsed = time.time() - start_time
+    print(f"\nData collection completed in {elapsed:.1f}s")
+    
+    # ── Save insider data (always, since we always fetch it) ──
     if insider_activity:
         insider_lines = insider_activity.count('\n')
         print(f"Insider activity: {insider_lines} transactions found")
-        # Save raw insider data alongside other filing artifacts
         os.makedirs(os.path.join("data", "filings"), exist_ok=True)
         insider_filename = f"{ticker}-insider-activity.md"
         with open(os.path.join("data", "filings", insider_filename), "w", encoding='utf-8') as f:
@@ -539,14 +642,31 @@ def analyze_ticker(ticker, no_cache=False):
         print(f"Insider activity saved to filings/{insider_filename}")
     else:
         print("No insider market transactions found")
- 
-    # Final synthesis (transcript is optional)
+    
+    # ── Hash insider data and compare with cache ──
+    insider_hash = compute_hash(insider_activity) if insider_activity else None
+    insider_changed = insider_hash != cached.get('insider_hash')
+    
+    if insider_changed and not filing_stale:
+        print("[CACHE] Insider activity changed — final synthesis will re-run")
+    
+    # ── Compute transcript hash for manifest ──
+    if 'transcript' in futures and transcript_analysis:
+        transcript_hash = compute_hash(transcript_analysis)
+    elif manifest:
+        transcript_hash = cached.get('transcript_hash')
+    else:
+        transcript_hash = None
+    
+    # ── Final synthesis ──
+    # Re-run if any upstream ingredient changed
+    need_final = filing_stale or transcript_stale or insider_changed
     final_text = None
-    if expert_analysis and missing_analysis:
+    
+    if need_final and expert_analysis and missing_analysis:
         # Extract transcript date from the transcript analysis if available
         transcript_date = None
         if transcript_analysis:
-            # Try to extract date from first few lines of transcript analysis
             for line in transcript_analysis.split('\n')[:20]:
                 if 'call date' in line.lower() or 'date' in line.lower():
                     transcript_date = line.strip()
@@ -560,13 +680,82 @@ def analyze_ticker(ticker, no_cache=False):
             insider_activity=insider_activity
         )
         total_cost += final_cost
+        steps_run.append('final')
         
         # Read back the final report for batch comparison
         final_md_path = os.path.join("data", "intermediate", f"{ticker}_final_report.md")
-        if os.path.exists(final_md_path):
-            with open(final_md_path, "r", encoding='utf-8') as f:
-                final_text = f.read()
+        final_text = _read_file(final_md_path)
+    
+    elif not need_final and manifest and manifest['artifacts'].get('final_report_md'):
+        # Full cache hit — serve the cached final report
+        final_text = _read_file(manifest['artifacts']['final_report_md'])
+        cache_hits.append('final')
+        print(f"[FULL CACHE HIT] Report unchanged for {ticker} — $0.00 LLM cost")
+    
+    elif expert_analysis and missing_analysis:
+        # No manifest but we have analyses (first run, or manifest was invalidated)
+        transcript_date = None
+        if transcript_analysis:
+            for line in transcript_analysis.split('\n')[:20]:
+                if 'call date' in line.lower() or 'date' in line.lower():
+                    transcript_date = line.strip()
+                    break
+        
+        final_cost = create_final_analysis(
+            ticker, expert_analysis, missing_analysis,
+            transcript_analysis=transcript_analysis,
+            filing_date=filing.filing_date,
+            transcript_date=transcript_date,
+            insider_activity=insider_activity
+        )
+        total_cost += final_cost
+        steps_run.append('final')
+        
+        final_md_path = os.path.join("data", "intermediate", f"{ticker}_final_report.md")
+        final_text = _read_file(final_md_path)
+    
+    # ── Update manifest ──
+    artifact_paths = {
+        'expert_analysis': os.path.join("data", "filings",
+            f"{ticker}-{safe_form}-{filing.filing_date}-expert-analysis.md"),
+        'missing_analysis': os.path.join("data", "filings",
+            f"{ticker}-{safe_form}-{filing.filing_date}-missing-analysis.md"),
+        'transcript_analysis': os.path.join("data", "transcripts",
+            f"{ticker}-transcript-analysis.md") if transcript_analysis else None,
+        'insider_activity': os.path.join("data", "filings",
+            f"{ticker}-insider-activity.md") if insider_activity else None,
+        'final_report_md': os.path.join("data", "intermediate",
+            f"{ticker}_final_report.md"),
+        'final_report_pdf': os.path.join("data",
+            f"{ticker}_final_report.pdf"),
+    }
+    
+    previous_runs = manifest.get('runs', []) if manifest else []
+    new_manifest = {
+        'ticker': ticker,
+        'ingredients': {
+            'filing_accession_no': filing.accession_no,
+            'filing_form': filing.form,
+            'filing_date': str(filing.filing_date),
+            'quant_engine_version': QUANT_ENGINE_VERSION,
+            'transcript_hash': transcript_hash,
+            'insider_hash': insider_hash,
+        },
+        'artifacts': artifact_paths,
+        'runs': previous_runs + [{
+            'timestamp': now_iso(),
+            'cost': total_cost,
+            'steps_run': steps_run,
+            'cache_hits': cache_hits,
+        }],
+    }
+    save_manifest(ticker, new_manifest)
  
     total_elapsed = time.time() - start_time
     print(f"\n--- {ticker} Complete ({total_elapsed:.1f}s) | Cost: ${total_cost:.4f} ---")
+    if cache_hits:
+        print(f"    Cache hits: {', '.join(cache_hits)}")
+    if steps_run:
+        print(f"    Steps run:  {', '.join(steps_run)}")
     return total_cost, final_text
+

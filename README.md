@@ -126,6 +126,8 @@ Reports are saved to `data/`:
 ```
 data/
 ├── {TICKER}_final_report.pdf                      # ← Final PDF reports (top level)
+├── cache/
+│   └── {TICKER}.json                              # Cache manifest (ingredient hashes)
 ├── filings/
 │   ├── {TICKER}-10-K-{DATE}-raw.md                # Raw SEC filing
 │   ├── {TICKER}-10-K-{DATE}-xbrl-trends.md        # 4-year financial trends
@@ -181,25 +183,34 @@ All calls use **flex processing** by default (~50% off standard pricing). If fle
 
 Typical cost per ticker (GPT-5.4, flex pricing):
 
-| Filing Size | Estimated Total |
-|-------------|----------------|
-| Small (~20K tokens) | ~$0.20 |
-| Medium (~85K tokens) | ~$0.50 |
-| Large (~230K tokens) | ~$1.00 |
+| Filing Size | First Run | Cached (no change) | Cached (insider changed) |
+|-------------|-----------|--------------------|--------------------------|
+| Small (~20K tokens) | ~$0.20 | **$0.00** | ~$0.08 |
+| Medium (~85K tokens) | ~$0.50 | **$0.00** | ~$0.08 |
+| Large (~230K tokens) | ~$1.00 | **$0.00** | ~$0.16 |
 
-Cost summary is printed at the end of each run.
+The pipeline uses **ingredient-based caching**: it tracks filing accession numbers, transcript hashes, insider data hashes, and quant engine version. On repeat requests, only the LLM steps whose inputs actually changed are re-run. Cost summary is printed at the end of each run.
 
 ## Project Structure
 
 ```
-├── main.py               # Pipeline orchestrator
-├── quant_engine.py       # Deterministic quantitative financial scorecard
-├── prompt_configs.py     # LLM prompt templates
-├── utils.py              # Token counting + cost estimation
-├── fetch_transcripts.py  # Selenium-based transcript scraper
-├── requirements.txt      # Python dependencies
-├── .env                  # API keys (not committed)
-└── .gitignore
+├── main.py                    # Backward-compatible CLI wrapper
+├── quant_engine.py            # Deterministic financial scorecard (Altman Z', Piotroski, Beneish)
+├── prompt_configs.py          # LLM prompt templates
+├── utils.py                   # Token counting + cost estimation
+├── requirements.txt           # Python dependencies
+├── .env                       # API keys (not committed)
+├── .gitignore
+│
+└── viridis_cfa/               # Core package
+    ├── __init__.py
+    ├── config.py              # Environment loading, EDGAR identity setup
+    ├── pipeline.py            # Pipeline orchestrator (cache-aware)
+    ├── cache.py               # Ingredient-based cache manifests
+    ├── mcp_server.py          # MCP server (4 tools)
+    ├── cli.py                 # CLI entry point
+    ├── scrapers.py            # Selenium-based transcript scraping
+    └── insider.py             # SEC Form 4 insider trade analysis
 ```
 
 ## License

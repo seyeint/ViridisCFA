@@ -3,6 +3,10 @@ import pandas as pd
 import numpy as np
 from typing import Dict, Tuple, List, Optional
 
+# Bump this version when calculation logic changes (scores, coefficients, etc.)
+# The cache system uses this to automatically invalidate stale expert analyses.
+QUANT_ENGINE_VERSION = "1.0"
+
 # Synonyms for mapping standard GAAP items to raw EDGAR tags
 BALANCE_SHEET_MAP = {
     'total_assets': ['Assets'],
