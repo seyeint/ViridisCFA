@@ -5,7 +5,7 @@ from typing import Dict, Tuple, List, Optional
 
 # Bump this version when calculation logic changes (scores, coefficients, etc.)
 # The cache system uses this to automatically invalidate stale expert analyses.
-QUANT_ENGINE_VERSION = "1.0"
+QUANT_ENGINE_VERSION = "1.1"
 
 # Synonyms for mapping standard GAAP items to raw EDGAR tags
 BALANCE_SHEET_MAP = {
@@ -263,7 +263,7 @@ def calculate_piotroski_f(metrics: Dict[str, Dict[str, float]], year: str) -> Tu
     total_score = sum(points.values())
     return total_score, points, list(set(missing_vars))
 
-def calculate_beneish_m(metrics: Dict[str, Dict[str, float]], year: str) -> Tuple[Optional[float], str, List[str]]:
+def calculate_beneish_m(metrics: Dict[str, Dict[str, float]], year: str) -> Tuple[Optional[float], str, List[str], List[str]]:
     """Calculate Beneish M-Score for a specific year.
     M-Score > -1.78 suggests a high probability of earnings manipulation.
     """
@@ -274,7 +274,7 @@ def calculate_beneish_m(metrics: Dict[str, Dict[str, float]], year: str) -> Tupl
         year_num = int(year[3:])
         prev_year = f"{prefix}{year_num - 1}"
     except Exception:
-        return None, "Invalid Year Format", ["Year parsing error"]
+        return None, "Invalid Year Format", ["Year parsing error"], []
         
     # Get values
     rev = metrics['revenue'].get(year)
@@ -306,9 +306,11 @@ def calculate_beneish_m(metrics: Dict[str, Dict[str, float]], year: str) -> Tupl
     if net_inc is None: missing_vars.append("Net Income")
     
     if missing_vars:
-        return None, "Incomplete Data", missing_vars
+        return None, "Incomplete Data", missing_vars, []
         
     try:
+        imputed = []  # Track components defaulted to neutral due to missing data
+        
         # 1. SGI (Sales Growth Index)
         sgi = rev / rev_prev
         
@@ -316,7 +318,8 @@ def calculate_beneish_m(metrics: Dict[str, Dict[str, float]], year: str) -> Tupl
         if receivables is not None and receivables_prev is not None:
             dsri = (receivables / rev) / (receivables_prev / rev_prev)
         else:
-            dsri = 1.0  # Fallback to neutral
+            dsri = 1.0
+            imputed.append("DSRI (Receivables)")
             
         # 3. GMI (Gross Margin Index)
         if gross_profit is not None and gross_profit_prev is not None:
@@ -325,6 +328,7 @@ def calculate_beneish_m(metrics: Dict[str, Dict[str, float]], year: str) -> Tupl
             gmi = gm_prev / gm if gm > 0 else 1.0
         else:
             gmi = 1.0
+            imputed.append("GMI (Gross Margin)")
             
         # 4. AQI (Asset Quality Index)
         # Noncurrent assets = Total Assets - Current Assets - PPE
@@ -336,6 +340,7 @@ def calculate_beneish_m(metrics: Dict[str, Dict[str, float]], year: str) -> Tupl
             aqi = aq / aq_prev if aq_prev > 0 else 1.0
         else:
             aqi = 1.0
+            imputed.append("AQI (Asset Quality)")
             
         # 5. DEPI (Depreciation Index)
         if depr is not None and depr_prev is not None and ppe is not None and ppe_prev is not None:
@@ -344,12 +349,14 @@ def calculate_beneish_m(metrics: Dict[str, Dict[str, float]], year: str) -> Tupl
             depi = depr_rate_prev / depr_rate if depr_rate > 0 else 1.0
         else:
             depi = 1.0
+            imputed.append("DEPI (Depreciation)")
             
         # 6. SGAI (SG&A Expenses Index)
         if sga is not None and sga_prev is not None:
             sgai = (sga / rev) / (sga_prev / rev_prev)
         else:
             sgai = 1.0
+            imputed.append("SGAI (SG&A)")
             
         # 7. LVGI (Leverage Index)
         lev = liabilities / assets
@@ -362,6 +369,7 @@ def calculate_beneish_m(metrics: Dict[str, Dict[str, float]], year: str) -> Tupl
             tata = (net_inc - cfo) / assets
         else:
             tata = 0.0
+            imputed.append("TATA (Accruals)")
             
         # Beneish 8-variable model equation
         m_score = (-4.84 + 
@@ -374,11 +382,11 @@ def calculate_beneish_m(metrics: Dict[str, Dict[str, float]], year: str) -> Tupl
                    (4.037 * tata) + 
                    (0.0327 * lvgi))
                    
-        status = "High Risk (> -1.78)" if m_score > -1.78 else "Low Risk (<= -1.78)"
-        return m_score, status, []
+        status = "High Risk (> -1.78)" if m_score > -1.78 else "Grey Zone (-2.22 to -1.78)" if m_score > -2.22 else "Low Risk (<= -2.22)"
+        return m_score, status, [], imputed
         
     except Exception as e:
-        return None, f"Calculation Error: {e}", ["Math Error"]
+        return None, f"Calculation Error: {e}", ["Math Error"], []
 
 def generate_quant_scorecard(company) -> Tuple[str, Dict]:
     """Generates the Quantitative Financial Scorecard in Markdown"""
@@ -525,9 +533,14 @@ def generate_quant_scorecard(company) -> Tuple[str, Dict]:
         lines.append(f"| **Piotroski F-Score** | `UNABLE TO COMPUTE` | Missing: {', '.join(f_missing)} | `MISSING - Footnotes Search Required` |")
         
     # Beneish M
-    m_val, m_stat, m_missing = beneish_results[latest_year]
+    m_val, m_stat, m_missing, m_imputed = beneish_results[latest_year]
     if m_val is not None:
-        lines.append(f"| **Beneish M-Score** | `{m_val:.2f}` | {m_stat} | `Programmatically Verified` |")
+        imputed_note = ""
+        verification = "`Programmatically Verified`"
+        if m_imputed:
+            imputed_note = f" ⚠️ {len(m_imputed)}/8 components defaulted to neutral: {', '.join(m_imputed)}. Score may understate risk."
+            verification = "`Verified (with imputed components)`"
+        lines.append(f"| **Beneish M-Score** | `{m_val:.2f}` | {m_stat}{imputed_note} | {verification} |")
     else:
         lines.append(f"| **Beneish M-Score** | `UNABLE TO COMPUTE` | Missing: {', '.join(m_missing)} | `MISSING - Footnotes Search Required` |")
         
@@ -576,7 +589,7 @@ def generate_quant_scorecard(company) -> Tuple[str, Dict]:
     # Beneish M
     m_row = ["**Beneish M-Score**"]
     for y in sorted_years:
-        val, _, _ = beneish_results[y]
+        val, _, _, _ = beneish_results[y]
         m_row.append(f"`{val:.2f}`" if val is not None else "`N/A`")
     lines.append(" | ".join(m_row))
     
@@ -609,6 +622,20 @@ def generate_quant_scorecard(company) -> Tuple[str, Dict]:
     lines.append(" | ".join(fcf_row))
     
     lines.append("")
+    
+    # Methodology definitions — self-documenting for audit/reproducibility
+    lines.append("### Methodology")
+    lines.append(f"- **Engine Version**: `{QUANT_ENGINE_VERSION}`")
+    lines.append("- **Altman Z'-Score (Z-Prime)**: Book-value variant (private firm model). Coefficients: 0.717×X1 + 0.847×X2 + 3.107×X3 + 0.420×X4 + 0.998×X5. Thresholds: Safe > 2.90, Grey 1.23–2.90, Distress < 1.23.")
+    lines.append("- **Piotroski F-Score**: 9-point binary scoring across profitability (4), leverage/liquidity (3), and operating efficiency (2). Higher is stronger.")
+    lines.append("- **Beneish M-Score**: 8-variable model (Beneish 1999). Thresholds: M > −1.78 = High Risk, −2.22 to −1.78 = Grey Zone, M ≤ −2.22 = Low Risk. Components defaulted to neutral (1.0) when XBRL data is unavailable are flagged.")
+    
+    # Flag any imputed Beneish components for the latest year
+    _, _, _, latest_imputed = beneish_results[latest_year]
+    if latest_imputed:
+        lines.append(f"- **⚠️ Beneish Data Gaps ({latest_year})**: {', '.join(latest_imputed)} — defaulted to neutral. M-Score may understate manipulation risk.")
+    
+    lines.append("")
     lines.append("---")
     
     metadata = {
@@ -620,7 +647,9 @@ def generate_quant_scorecard(company) -> Tuple[str, Dict]:
         'quick_ratio': quick_ratio.get(latest_year),
         'debt_to_equity': debt_to_equity.get(latest_year),
         'fcf_yield': fcf_yield.get(latest_year),
-        'all_years': sorted_years
+        'all_years': sorted_years,
+        'quant_engine_version': QUANT_ENGINE_VERSION,
+        'beneish_imputed_components': latest_imputed,
     }
     
     return "\n".join(lines), metadata

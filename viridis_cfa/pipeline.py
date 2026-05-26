@@ -289,7 +289,7 @@ def process_transcript(ticker, no_cache=False):
         
     return transcript_analysis, cost
 
-def create_final_analysis(ticker, expert_analysis, missing_analysis, transcript_analysis=None, filing_date=None, transcript_date=None, insider_activity=None):
+def create_final_analysis(ticker, expert_analysis, missing_analysis, transcript_analysis=None, filing_date=None, transcript_date=None, insider_activity=None, filing_accession_no=None):
     """Create the final analysis from all components. Transcript and insider data are optional."""
     if not (expert_analysis and missing_analysis):
         print("Missing required filing analyses for final report")
@@ -332,6 +332,26 @@ def create_final_analysis(ticker, expert_analysis, missing_analysis, transcript_
     final_analysis, cost = result if result else (None, 0)
     
     if final_analysis:
+        # Append provenance footer (deterministic — LLM cannot omit or rephrase)
+        from quant_engine import QUANT_ENGINE_VERSION
+        from datetime import datetime, timezone
+        # Derive model/tier from run_analysis defaults rather than hardcoding
+        import inspect
+        _defaults = inspect.signature(run_analysis).parameters
+        _model = _defaults['model'].default
+        _tier = _defaults['service_tier'].default
+        provenance_lines = [
+            "",
+            "---",
+            "##### Report Provenance",
+            f"- **Quant Engine**: v{QUANT_ENGINE_VERSION}",
+            f"- **Model**: {_model} ({_tier})",
+            f"- **Filing**: {filing_date or 'N/A'} | Accession: `{filing_accession_no or 'N/A'}`",
+            f"- **Generated**: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
+            f"- **Pipeline**: ViridisCFA Research Engine",
+        ]
+        final_analysis += "\n".join(provenance_lines)
+        
         # Save markdown and HTML intermediates to a subfolder
         intermediate_dir = os.path.join("data", "intermediate")
         os.makedirs(intermediate_dir, exist_ok=True)
@@ -677,7 +697,8 @@ def analyze_ticker(ticker, no_cache=False):
             transcript_analysis=transcript_analysis,
             filing_date=filing.filing_date,
             transcript_date=transcript_date,
-            insider_activity=insider_activity
+            insider_activity=insider_activity,
+            filing_accession_no=filing.accession_no
         )
         total_cost += final_cost
         steps_run.append('final')
@@ -706,7 +727,8 @@ def analyze_ticker(ticker, no_cache=False):
             transcript_analysis=transcript_analysis,
             filing_date=filing.filing_date,
             transcript_date=transcript_date,
-            insider_activity=insider_activity
+            insider_activity=insider_activity,
+            filing_accession_no=filing.accession_no
         )
         total_cost += final_cost
         steps_run.append('final')

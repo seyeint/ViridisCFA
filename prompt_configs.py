@@ -139,7 +139,7 @@ Analysis Task: Generate a structured report summarizing the key information from
    - Group risks into logical categories if possible (e.g., operational, financial, market, regulatory, strategic).
 
 4. Management's Discussion and Analysis (MD&A) & Quantitative Insights:
-   - Integrate the **Deterministic Financial Engineering Scorecard** trends (Altman Z-Score, Piotroski F-Score, Beneish M-Score) into your analysis of the company's solvency, liquidity, and earnings quality.
+   - Integrate the **Deterministic Financial Engineering Scorecard** trends (Altman Z'-Score, Piotroski F-Score, Beneish M-Score) into your analysis of the company's solvency, liquidity, and earnings quality.
    - Summarize management's commentary on financial results (Revenue, Profitability, Key Segment Performance) for the period covered.
    - Highlight key trends, drivers, and challenges discussed by management.
    - Summarize the discussion on Liquidity (cash position, cash flows, debt) and Capital Resources (funding sources, capital expenditures).

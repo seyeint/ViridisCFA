@@ -18,9 +18,9 @@ data/
 # Legacy font files (no longer used)
 fonts/
 
-# Test/dev files
-test_*.py
-test_*.txt
+# Test/dev scratch files (root-level only; tests/ directory is tracked)
+/test_*.py
+/test_*.txt
 
 # IDE specific files
 .idea/
