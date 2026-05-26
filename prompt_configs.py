@@ -23,6 +23,7 @@ Output Format:
 - Present the analysis clearly using Markdown for headings and bullet points.
 - Have a sources section in the beginning of the report that lists the sources of the information used to make the report.
 - Ensure all information is strictly derived from the provided information.
+- Do not include conversational offers, follow-up questions, or meta-commentary about what you can do next.
 - End with an "Investment Conclusion" section containing:
   1. A one-line investment thesis summarizing the core case for or against this company.
   2. **Bull Case**: The scenario and reasoning under which this investment works well.
@@ -51,6 +52,7 @@ Output Format:
 - End with "Top Picks" — which 1-3 companies deserve deeper research and why.
 - Keep it concise — this is a screening tool, not a deep dive.
 - Use Markdown formatting.
+- Do not include conversational offers, follow-up questions, or meta-commentary about what you can do next.
 """
 
 transcript_prompt_template = """
@@ -84,7 +86,7 @@ Analysis Task: Generate a concise report with these sections:
 
 Limit yourself to the information provided in the transcript text, do not include any information outside of the transcript text.
 
-Output Format: Use Markdown with headings and bullet points. Keep it tight and focused on the juiciest insights.
+Output Format: Use Markdown with headings and bullet points. Keep it tight and focused on the juiciest insights. Do not include conversational offers, follow-up questions, or meta-commentary about what you can do next.
 """
 
 missing_analysis_prompt_template = """
@@ -101,7 +103,7 @@ The SEC filing text is:
 
 {filing_text}
 
-Output Format: Present the analysis clearly using Markdown for headings and bullet points. Ensure all information is strictly derived from the provided information.
+Output Format: Present the analysis clearly using Markdown for headings and bullet points. Ensure all information is strictly derived from the provided information. Do not include conversational offers, follow-up questions, or meta-commentary about what you can do next.
 
 """
 
@@ -160,5 +162,5 @@ Analysis Task: Generate a structured report summarizing the key information from
    - State management's conclusion on the effectiveness of disclosure controls and procedures.
    - For 10-Ks, state management's assessment of internal control over financial reporting (ICFR) and the auditor's attestation, if provided.
 
-Output Format: Present the analysis clearly using Markdown for headings and bullet points. Ensure all information is strictly derived from the provided filing text and programmatic scorecard.
+Output Format: Present the analysis clearly using Markdown for headings and bullet points. Ensure all information is strictly derived from the provided filing text and programmatic scorecard. Do not include conversational offers, follow-up questions, or meta-commentary about what you can do next.
 """

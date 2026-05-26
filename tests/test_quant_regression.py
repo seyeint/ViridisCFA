@@ -23,10 +23,15 @@ load_dotenv()
 
 from viridis_cfa.config import *  # noqa: F401,F403 — sets EDGAR identity
 from edgar import Company
-from quant_engine import generate_quant_scorecard, QUANT_ENGINE_VERSION
+from quant_engine import (
+    apply_balance_sheet_fallbacks,
+    calculate_beneish_m,
+    generate_quant_scorecard,
+    QUANT_ENGINE_VERSION,
+)
 
 
-# ─── Known-Good Snapshots (quant_engine v1.1, captured 2026-05-26) ───
+# ─── Known-Good Snapshots (quant_engine v1.2, captured 2026-05-26) ───
 
 SNAPSHOTS = {
     "TSLA": {
@@ -96,10 +101,52 @@ class TestQuantEngineVersion:
     """Ensure we're testing against the expected engine version."""
 
     def test_version_matches(self):
-        assert QUANT_ENGINE_VERSION == "1.1", (
-            f"Snapshot fixtures are pinned to v1.1, but engine is v{QUANT_ENGINE_VERSION}. "
+        assert QUANT_ENGINE_VERSION == "1.2", (
+            f"Snapshot fixtures are pinned to v1.2, but engine is v{QUANT_ENGINE_VERSION}. "
             f"Re-capture snapshots if version was intentionally bumped."
         )
+
+
+class TestDeterministicFallbacks:
+    """Pure unit tests for balance-sheet fallback contracts."""
+
+    def test_derives_missing_total_liabilities(self):
+        metrics = {
+            "total_assets": {"FY 2025": 1000.0},
+            "total_liabilities": {},
+            "equity": {"FY 2025": 350.0},
+            "redeemable_noncontrolling_interest": {"FY 2025": 25.0},
+        }
+
+        derived = apply_balance_sheet_fallbacks(metrics, ["FY 2025"])
+
+        assert metrics["total_liabilities"]["FY 2025"] == 625.0
+        assert derived == [{
+            "metric": "total_liabilities",
+            "year": "FY 2025",
+            "formula": "Total Assets - Equity - Redeemable Noncontrolling Interest",
+        }]
+
+    def test_derives_missing_equity(self):
+        metrics = {
+            "total_assets": {"FY 2025": 1000.0},
+            "total_liabilities": {"FY 2025": 625.0},
+            "equity": {},
+            "redeemable_noncontrolling_interest": {"FY 2025": 25.0},
+        }
+
+        derived = apply_balance_sheet_fallbacks(metrics, ["FY 2025"])
+
+        assert metrics["equity"]["FY 2025"] == 350.0
+        assert derived == [{
+            "metric": "equity",
+            "year": "FY 2025",
+            "formula": "Total Assets - Total Liabilities - Redeemable Noncontrolling Interest",
+        }]
+
+    def test_beneish_invalid_year_shape(self):
+        result = calculate_beneish_m({}, "FY")
+        assert len(result) == 4
 
 
 class TestAltmanZPrime:

@@ -5,7 +5,7 @@ from typing import Dict, Tuple, List, Optional
 
 # Bump this version when calculation logic changes (scores, coefficients, etc.)
 # The cache system uses this to automatically invalidate stale expert analyses.
-QUANT_ENGINE_VERSION = "1.1"
+QUANT_ENGINE_VERSION = "1.2"
 
 # Synonyms for mapping standard GAAP items to raw EDGAR tags
 BALANCE_SHEET_MAP = {
@@ -15,9 +15,17 @@ BALANCE_SHEET_MAP = {
     'current_liabilities': ['LiabilitiesCurrent'],
     'retained_earnings': ['RetainedEarningsAccumulatedDeficit', 'RetainedEarnings'],
     'equity': ['StockholdersEquity', 'StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest'],
+    'redeemable_noncontrolling_interest': ['RedeemableNoncontrollingInterestEquityCarryingAmount'],
     'long_term_debt': ['LongTermDebtNoncurrent', 'LongTermDebt'],
     'short_term_debt': ['ShortTermDebt', 'ShortTermDebtNoncurrent', 'LongTermDebtCurrent'],
-    'receivables': ['AccountsReceivableNetCurrent', 'AccountsReceivableNet'],
+    'receivables': [
+        'AccountsReceivableNetCurrent',
+        'AccountsReceivableNet',
+        'AccountsNotesAndLoansReceivableNetCurrent',
+        'TradeAccountsReceivableNetCurrent',
+        'ReceivablesNetCurrent',
+        'ReceivablesNet',
+    ],
     'ppe_net': ['PropertyPlantAndEquipmentNet'],
     'cash': ['CashAndCashEquivalentsAtCarryingValue', 'CashAndCashEquivalents', 'CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents']
 }
@@ -98,6 +106,45 @@ def get_yoy_change(series: Dict[str, float], year: str) -> Tuple[Optional[float]
     except Exception:
         pass
     return None, False
+
+def apply_balance_sheet_fallbacks(metrics: Dict[str, Dict[str, float]], years: List[str]) -> List[Dict[str, str]]:
+    """Derive missing balance-sheet totals only from accounting identities.
+
+    Some filers omit a plain XBRL `Liabilities` or `StockholdersEquity` row from
+    the standardized statement dataframe while still reporting the components
+    needed to derive it. These fallbacks are deterministic and auditable.
+    """
+    derived = []
+    redeemable_series = metrics.get('redeemable_noncontrolling_interest', {})
+
+    for year in years:
+        assets = metrics['total_assets'].get(year)
+        liabilities = metrics['total_liabilities'].get(year)
+        equity = metrics['equity'].get(year)
+        redeemable_nci = redeemable_series.get(year) or 0.0
+
+        if liabilities is None and assets is not None and equity is not None:
+            derived_liabilities = assets - equity - redeemable_nci
+            if derived_liabilities >= 0:
+                metrics['total_liabilities'][year] = derived_liabilities
+                liabilities = derived_liabilities
+                derived.append({
+                    'metric': 'total_liabilities',
+                    'year': year,
+                    'formula': 'Total Assets - Equity - Redeemable Noncontrolling Interest',
+                })
+
+        if equity is None and assets is not None and liabilities is not None:
+            derived_equity = assets - liabilities - redeemable_nci
+            if derived_equity >= 0:
+                metrics['equity'][year] = derived_equity
+                derived.append({
+                    'metric': 'equity',
+                    'year': year,
+                    'formula': 'Total Assets - Total Liabilities - Redeemable Noncontrolling Interest',
+                })
+
+    return derived
 
 def calculate_altman_z(metrics: Dict[str, Dict[str, float]], year: str) -> Tuple[Optional[float], str, List[str]]:
     """Calculate Altman Z'-Score (Z-Prime) for a specific year.
@@ -409,7 +456,7 @@ def generate_quant_scorecard(company) -> Tuple[str, Dict]:
         inc_df = None
         
     try:
-        cf_df = facts.cash_flow(periods=4).to_dataframe()
+        cf_df = facts.cashflow_statement(periods=4, period='annual').to_dataframe()
     except Exception:
         cf_df = None
         
@@ -452,6 +499,8 @@ def generate_quant_scorecard(company) -> Tuple[str, Dict]:
             ga = metrics['general_administrative'].get(y)
             if sm is not None and ga is not None:
                 metrics['sga'][y] = sm + ga
+
+    derived_fields = apply_balance_sheet_fallbacks(metrics, sorted_years)
                 
     if not sorted_years:
         return "Incomplete data series to generate quantitative metrics.", {}
@@ -464,6 +513,7 @@ def generate_quant_scorecard(company) -> Tuple[str, Dict]:
     beneish_results = {}
     current_ratio = {}
     quick_ratio = {}
+    quick_ratio_missing = {}
     debt_to_equity = {}
     fcf_yield = {}
     
@@ -477,8 +527,8 @@ def generate_quant_scorecard(company) -> Tuple[str, Dict]:
         liabilities = metrics['total_liabilities'].get(y)
         curr_assets = metrics['current_assets'].get(y)
         curr_liab = metrics['current_liabilities'].get(y)
-        cash = metrics['cash'].get(y, 0.0) or 0.0
-        receivables = metrics['receivables'].get(y, 0.0) or 0.0
+        cash = metrics['cash'].get(y)
+        receivables = metrics['receivables'].get(y)
         equity = metrics['equity'].get(y)
         cfo = metrics['operating_cash_flow'].get(y)
         capex = metrics['capex'].get(y)
@@ -489,11 +539,23 @@ def generate_quant_scorecard(company) -> Tuple[str, Dict]:
         else:
             current_ratio[y] = None
             
-        # Quick Ratio: (Cash + Receivables) / Current Liabilities
-        if curr_liab is not None and curr_liab > 0:
+        # Quick Ratio: (Cash + Receivables) / Current Liabilities.
+        # Do not silently default missing receivables to zero; that can make
+        # working-capital-heavy companies look artificially illiquid.
+        missing_quick_inputs = []
+        if cash is None:
+            missing_quick_inputs.append("Cash")
+        if receivables is None:
+            missing_quick_inputs.append("Receivables")
+        if curr_liab is None:
+            missing_quick_inputs.append("Current Liabilities")
+
+        if curr_liab is not None and curr_liab > 0 and cash is not None and receivables is not None:
             quick_ratio[y] = (cash + receivables) / curr_liab
+            quick_ratio_missing[y] = []
         else:
             quick_ratio[y] = None
+            quick_ratio_missing[y] = missing_quick_inputs or ["Current Liabilities is zero"]
             
         # Debt to Equity: Total Liabilities / Equity
         if liabilities is not None and equity is not None and equity > 0:
@@ -521,7 +583,10 @@ def generate_quant_scorecard(company) -> Tuple[str, Dict]:
     # Altman Z'
     z_val, z_stat, z_missing = altman_results[latest_year]
     if z_val is not None:
-        lines.append(f"| **Altman Z'-Score (Z-Prime)** | `{z_val:.2f}` | {z_stat} | `Programmatically Verified` |")
+        z_status = "`Programmatically Verified`"
+        if any(d['year'] == latest_year and d['metric'] in ('total_liabilities', 'equity') for d in derived_fields):
+            z_status = "`Verified (with derived balance-sheet inputs)`"
+        lines.append(f"| **Altman Z'-Score (Z-Prime)** | `{z_val:.2f}` | {z_stat} | {z_status} |")
     else:
         lines.append(f"| **Altman Z'-Score (Z-Prime)** | `UNABLE TO COMPUTE` | Missing: {', '.join(z_missing)} | `MISSING - Footnotes Search Required` |")
         
@@ -554,10 +619,16 @@ def generate_quant_scorecard(company) -> Tuple[str, Dict]:
     qr = quick_ratio.get(latest_year)
     if qr is not None:
         lines.append(f"| **Quick Ratio** | `{qr:.2f}` | Immediate cash coverage | `Programmatically Verified` |")
+    else:
+        missing_qr = ", ".join(quick_ratio_missing.get(latest_year, ["Cash or Receivables"]))
+        lines.append(f"| **Quick Ratio** | `UNABLE TO COMPUTE` | Missing: {missing_qr} | `MISSING - Footnotes Search Required` |")
         
     de = debt_to_equity.get(latest_year)
     if de is not None:
-        lines.append(f"| **Debt-to-Equity** | `{de:.2f}` | Leverage ratio | `Programmatically Verified` |")
+        de_status = "`Programmatically Verified`"
+        if any(d['year'] == latest_year and d['metric'] in ('total_liabilities', 'equity') for d in derived_fields):
+            de_status = "`Verified (with derived balance-sheet inputs)`"
+        lines.append(f"| **Debt-to-Equity** | `{de:.2f}` | Leverage ratio | {de_status} |")
         
     fcfy = fcf_yield.get(latest_year)
     if fcfy is not None:
@@ -629,6 +700,12 @@ def generate_quant_scorecard(company) -> Tuple[str, Dict]:
     lines.append("- **Altman Z'-Score (Z-Prime)**: Book-value variant (private firm model). Coefficients: 0.717×X1 + 0.847×X2 + 3.107×X3 + 0.420×X4 + 0.998×X5. Thresholds: Safe > 2.90, Grey 1.23–2.90, Distress < 1.23.")
     lines.append("- **Piotroski F-Score**: 9-point binary scoring across profitability (4), leverage/liquidity (3), and operating efficiency (2). Higher is stronger.")
     lines.append("- **Beneish M-Score**: 8-variable model (Beneish 1999). Thresholds: M > −1.78 = High Risk, −2.22 to −1.78 = Grey Zone, M ≤ −2.22 = Low Risk. Components defaulted to neutral (1.0) when XBRL data is unavailable are flagged.")
+    lines.append("- **Quick Ratio**: (Cash + Receivables) / Current Liabilities. Not computed if cash, receivables, or current liabilities are missing from the XBRL statement extraction.")
+
+    latest_derived = [d for d in derived_fields if d['year'] == latest_year]
+    if latest_derived:
+        derived_desc = "; ".join(f"{d['metric']} via {d['formula']}" for d in latest_derived)
+        lines.append(f"- **Derived Balance-Sheet Inputs ({latest_year})**: {derived_desc}.")
     
     # Flag any imputed Beneish components for the latest year
     _, _, _, latest_imputed = beneish_results[latest_year]
@@ -650,6 +727,8 @@ def generate_quant_scorecard(company) -> Tuple[str, Dict]:
         'all_years': sorted_years,
         'quant_engine_version': QUANT_ENGINE_VERSION,
         'beneish_imputed_components': latest_imputed,
+        'quick_ratio_missing_components': quick_ratio_missing.get(latest_year, []),
+        'derived_balance_sheet_fields': latest_derived,
     }
     
     return "\n".join(lines), metadata

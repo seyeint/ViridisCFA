@@ -20,6 +20,7 @@ def get_insider_activity(company, filing_date, max_filings=40):
         window_start = ref_date - timedelta(days=180)
         
         transactions = []
+        seen_transactions = set()
         processed = 0
         
         for f in filings:
@@ -91,6 +92,22 @@ def get_insider_activity(company, filing_date, max_filings=40):
                                     pct_str = f"{sold_pct:.2f}%"
                         except Exception:
                             pass
+
+                        transaction_key = (
+                            f.accession_no,
+                            str(txn_date).split(' ')[0],
+                            obj.insider_name,
+                            obj.position,
+                            txn_type,
+                            shares_num,
+                            round(price_num, 4),
+                            round(value_num, 2),
+                            str(remaining),
+                            is_10b51_plan,
+                        )
+                        if transaction_key in seen_transactions:
+                            continue
+                        seen_transactions.add(transaction_key)
                         
                         transactions.append({
                             'date': str(txn_date).split(' ')[0],  # Strip time component

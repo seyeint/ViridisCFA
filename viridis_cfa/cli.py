@@ -5,6 +5,7 @@ import time
 # Local package imports
 from prompt_configs import batch_comparison_prompt_template
 from viridis_cfa.pipeline import analyze_ticker, run_analysis
+from viridis_cfa.report_renderer import write_report_artifacts
 
 def main():
     no_cache = False
@@ -89,9 +90,18 @@ def main():
             intermediate_dir = os.path.join("data", "intermediate")
             os.makedirs(intermediate_dir, exist_ok=True)
             comp_filename = "batch_comparison.md"
-            with open(os.path.join(intermediate_dir, comp_filename), "w", encoding='utf-8') as f:
+            comp_path = os.path.join(intermediate_dir, comp_filename)
+            with open(comp_path, "w", encoding='utf-8') as f:
                 f.write(comparison)
             print(f"Batch comparison saved to intermediate/{comp_filename}")
+            comp_html_path = os.path.join(intermediate_dir, "batch_comparison.html")
+            write_report_artifacts(
+                "Batch Comparison",
+                comparison,
+                {'final_report_md': comp_path, 'final_report_html': comp_html_path},
+                comp_html_path,
+            )
+            print("Batch comparison HTML saved to intermediate/batch_comparison.html")
             total_cost += comp_cost
             print(f"Comparison cost: ${comp_cost:.4f}")
     
