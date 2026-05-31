@@ -1,14 +1,49 @@
-final_juice_prompt_template = """
-Instruction: You are a high IQ expert financial analyst tasked with filtering out neutral information from analysis reports that your expert colleagues made and producing a final investment-grade report.
+FINAL_PROMPT_VERSION = "1.3"
 
-You will receive reports from expert analysts: a report on a SEC filing, a report that double checks the analysis for missing important information{transcript_intro}.
+
+final_juice_prompt_template = """
+Instruction: You are a senior investment analyst writing a concise, investment-grade memo for a portfolio manager. You will receive reports from your research team: an SEC filing analysis, a cross-check for missing information{transcript_intro}. Your job is to synthesize these into a single coherent memo — not to copy-paste them.
 
 {date_context}
 
-You will compile a final report that will be presented to the CEO and the board of directors, taking into account the following guidelines:
-- Focus only on non-neutral insights—exclude insights that don't really have an impact whether positive or negative to the company or our CEO decision to invest.
-- Your work is to integrate all reports trying to change them the least possible, without adding any information nor change their wording or content but only eliminating neutral information and making the final report coherent.
-- End the report with a clear "Investment Conclusion" section (see below).
+WRITING PRINCIPLES:
+1. Write like a senior analyst, not a note-taker. Use flowing prose paragraphs for narrative analysis (strategic assessment, management credibility, risk discussion). Reserve bullet points ONLY for dense data series (financial metrics, guidance figures, insider trade tables, capacity numbers).
+2. Use bold sparingly. Bold only the 5-10 most critical figures or conclusions in the entire report. When everything is bold, nothing stands out.
+3. Do not repeat the quantitative scorecard values (Altman Z', Piotroski, Beneish, ratios) — those are presented separately in the report dashboard. Reference them only if they support a specific analytical point (e.g., "The Altman Z'-Score places the company in the Distress Zone, consistent with the cash-burn trajectory described above").
+4. Strip neutral information — anything that does not meaningfully affect an investment decision should be excluded.
+5. Do not invent information. Every claim must trace to the provided source materials.
+6. Do not include conversational offers, follow-up questions, or meta-commentary.
+
+STRUCTURE:
+Begin with a brief "Sources" section listing what materials informed the report (filing type, date, transcript date if available, insider data window).
+
+Then a "Data Timing / Comparability Flags" section noting any mismatches between sources (GAAP vs non-GAAP, filing vs call figures, scorecard period vs filing period). Keep this tight — only flag items that could mislead a reader.
+
+Then the main body — organize by analytical themes, not by source document. Good section headings describe the INSIGHT, not the category. For example:
+- "Demand Is Real but Revenue Is Capacity-Constrained" (good)
+- "Core Positive Drivers" (bad — too generic)
+- "Margin Recovery Depends on Back-Half Execution" (good)
+- "Core Negative Drivers" (bad)
+
+Within each thematic section, lead with your analytical judgment in a prose sentence, then support it with specific data. The goal is argument-driven writing, not data-driven listing.
+
+End with an "Investment Conclusion" section containing:
+1. A one-line investment thesis — the single most important thing a PM needs to know.
+2. **Bull Case**: A 1-2 paragraph narrative of how this investment works.
+3. **Bear Case**: A 1-2 paragraph narrative of how this investment fails.
+4. **The Call**: Adjudicate — do not leave the bull and bear weighted equally by default. State which case the disclosed evidence supports more right now and why, name the one or two variables that actually decide the outcome, and say where today's evidence points on them.
+5. **Key Catalysts / Timeline**: The upcoming events that would confirm or invalidate each case (this can be bulleted).
+6. **Stance**: Bullish, Bearish, or Neutral, with conviction (High/Medium/Low) and a brief justification. Commit to a side when the weight of evidence leans, even modestly — a clear, well-reasoned Bullish or Bearish is more useful to a PM than reflexive caution. Reserve Neutral for genuinely two-sided setups where bull and bear are closely balanced; treat it as a deliberate judgment rather than a hedge, and when you choose it, state the single development that would move you off the fence. Calibrate conviction to how one-sided the evidence is: High when materially lopsided, Medium when directional but contingent on a catalyst, Low when finely balanced.
+
+After the Investment Conclusion, and as the very last thing in your output, append a machine-readable decision brief: a single fenced code block tagged json (with nothing after it) holding a JSON object with these exact keys, drawn only from the memo above:
+- stance: one of Bullish, Bearish, or Neutral
+- conviction: one of High, Medium, or Low
+- thesis: a single sentence capturing the investment case
+- upside_drivers: a list of up to 5 short plain-text strings
+- risk_drivers: a list of up to 5 short plain-text strings
+- key_catalysts: a list of up to 5 short plain-text strings
+- data_quality_flags: a list of up to 5 short plain-text strings (timing mismatches, non-GAAP caveats, missing or derived data, control or governance issues)
+The stance and conviction in this JSON must match the memo's Investment Conclusion. Keep every string plain natural language with no nested quotes, braces, or brackets.
 
 The first report analysis (SEC filing) is:
 
@@ -18,19 +53,8 @@ The second report analysis (missing information check) is:
 
 {missing_analysis}
 {transcript_section}
-
-Output Format:
-- Present the analysis clearly using Markdown for headings and bullet points.
-- Have a sources section in the beginning of the report that lists the sources of the information used to make the report.
-- Ensure all information is strictly derived from the provided information.
-- Do not include conversational offers, follow-up questions, or meta-commentary about what you can do next.
-- End with an "Investment Conclusion" section containing:
-  1. A one-line investment thesis summarizing the core case for or against this company.
-  2. **Bull Case**: The scenario and reasoning under which this investment works well.
-  3. **Bear Case**: The scenario and reasoning under which this investment fails or underperforms.
-  4. **Key Catalysts / Timeline**: The most important upcoming events or milestones that would confirm or invalidate each case.
-  5. **Stance**: State clearly whether the overall picture is Bullish, Bearish, or Neutral, with a conviction level (High, Medium, Low) and a brief justification.
 """
+
 
 batch_comparison_prompt_template = """
 Instruction: You are a senior portfolio analyst. You have received final investment analysis reports for {ticker_count} companies from your research team. Your task is to produce a concise screening summary that ranks these companies by investment attractiveness.
@@ -119,7 +143,7 @@ Here is the programmatic quantitative scorecard extracted directly from verified
 {quant_scorecard}
 
 CRITICAL VERIFICATION RULES:
-1. The scorecard above represents mathematically exact GAAP metrics calculated programmatically from verified XBRL facts. Do NOT alter, recalculate, or contradict any values in this table.
+1. The scorecard above is calculated deterministically from the company's reported SEC XBRL facts. The arithmetic is exact — do NOT alter or recalculate the values. However, you SHOULD judge whether each metric is meaningful for THIS company's business model and say so plainly. Altman Z' and Beneish M assume a non-financial, revenue-generating operating company; when the scorecard marks a metric "NOT APPLICABLE" or "advisory" (e.g. for a financial, REIT, or pre-revenue issuer, or a hypergrowth firm where Beneish penalizes growth), do not treat that number as a clean signal — explain the limitation, drawing on the scorecard's "Applicability Notes".
 2. If any metric is marked as "UNABLE TO COMPUTE" or "MISSING - Footnotes Search Required", you MUST scan the filing text (including footnote disclosures) to see if the company discloses these values or explains their absence. If found, highlight them in your report.
 3. Under no circumstances should you invent, estimate, or hallucinate any financial figures. If a metric is missing from both the programmatic scorecard and the filing text, state clearly that the company did not disclose it in the public filing.
 

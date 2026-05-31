@@ -5,9 +5,15 @@ import time
 # Local package imports
 from prompt_configs import batch_comparison_prompt_template
 from viridis_cfa.pipeline import analyze_ticker, run_analysis
-from viridis_cfa.report_renderer import write_report_artifacts
+from viridis_cfa.report_renderer import write_markdown_document_artifact
 
 def main():
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(line_buffering=True)
+        except AttributeError:
+            pass
+
     no_cache = False
     args = sys.argv[1:]
     
@@ -95,7 +101,7 @@ def main():
                 f.write(comparison)
             print(f"Batch comparison saved to intermediate/{comp_filename}")
             comp_html_path = os.path.join(intermediate_dir, "batch_comparison.html")
-            write_report_artifacts(
+            write_markdown_document_artifact(
                 "Batch Comparison",
                 comparison,
                 {'final_report_md': comp_path, 'final_report_html': comp_html_path},

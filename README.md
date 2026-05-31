@@ -1,6 +1,6 @@
 # ViridisCFA — AI-Powered Equity Research Pipeline
 
-An automated equity research pipeline that pulls SEC filings and earnings call transcripts, runs a local deterministic quantitative financial scorecard, crawls insider Form 4 activity (discriminating pre-scheduled 10b5-1 plans), runs multi-stage AI analysis using GPT-5.4 with flex processing (~50% cheaper), and produces synthesized investment reports with bull/bear cases.
+An automated equity research engine that pulls SEC filings and earnings call transcripts, runs a local deterministic quantitative financial scorecard, crawls insider Form 4 activity (discriminating pre-scheduled 10b5-1 plans), runs multi-stage AI analysis using GPT-5.4 with flex processing (~50% cheaper), and produces agent-readable investment reports as markdown, structured JSON, styled HTML, and optional PDF exports.
 
 ## How It Works
 
@@ -44,7 +44,19 @@ An automated equity research pipeline that pulls SEC filings and earnings call t
           └─────────┬───────────┘
                     ▼
           ┌─────────────────────┐
-          │ PDF Report          │
+          │ Structured Decision │
+          │ Brief JSON          │
+          │ (UI contract)       │
+          └─────────┬───────────┘
+                    ▼
+          ┌─────────────────────┐
+          │ Markdown + Styled   │
+          │ HTML Report         │
+          └─────────┬───────────┘
+                    ▼
+          ┌─────────────────────┐
+          │ Optional PDF Export │
+          │ (from HTML)         │
           └─────────┬───────────┘
                     ▼  (if multi-ticker)
           ┌─────────────────────┐
@@ -53,7 +65,7 @@ An automated equity research pipeline that pulls SEC filings and earnings call t
           └─────────────────────┘
 ```
 
-All three branches run **in parallel** using threads. The local quantitative scorecard values are injected directly into the LLM synthesis prompt with strict verification rules to prevent hallucinations.
+All three data branches run **in parallel** using threads. The local quantitative scorecard values are injected directly into the LLM synthesis prompt with strict verification rules to prevent hallucinations. The HTML report does not infer thesis/upside/downside from arbitrary markdown headings; it consumes a structured `decision_brief.json` contract generated from the final report.
 
 ## Setup
 
@@ -115,9 +127,9 @@ When run interactively (with no CLI arguments), you can also append `--no-cache`
 Enter ticker(s) (comma-separated, optionally append --no-cache): AAPL --no-cache
 ```
 
-Single ticker → one PDF report with investment conclusion (bull/bear case).
+Single ticker → one markdown report, one structured decision brief, one styled HTML report, and an optional PDF export.
 
-Multiple tickers → one PDF per ticker + a batch comparison ranking saved to `data/intermediate/batch_comparison.md`.
+Multiple tickers → one report set per ticker + a batch comparison ranking saved as markdown and HTML.
 
 ### Output
 
@@ -139,8 +151,10 @@ data/
 │   └── {TICKER}-transcript-analysis.md            # Transcript analysis
 └── intermediate/
     ├── {TICKER}_final_report.md                   # Final report (markdown source)
-    ├── {TICKER}_final_report.html                 # Styled HTML (Chrome input)
-    └── batch_comparison.md                        # Multi-ticker ranking
+    ├── {TICKER}_decision_brief.json               # Structured UI contract
+    ├── {TICKER}_final_report.html                 # Styled HTML report
+    ├── batch_comparison.md                        # Multi-ticker ranking
+    └── batch_comparison.html                      # Styled generic comparison doc
 ```
 
 ## Architecture
@@ -162,6 +176,7 @@ data/
 | Missing Analysis | GPT-5.4 | Medium | Identify gaps in expert analysis vs raw filing |
 | Transcript Analysis | GPT-5.4 | Medium | Extract insights from earnings call |
 | Final Synthesis | GPT-5.4 | Medium | Merge all analyses + insider signals, produce bull/bear case |
+| Decision Brief | GPT-5.4 | Low | Convert final report into strict JSON for HTML UI |
 | Batch Comparison | GPT-5.4 | Medium | Rank and compare tickers (multi-ticker only) |
 
 All calls use **flex processing** by default (~50% off standard pricing). If flex capacity is unavailable, requests automatically fall back to standard.
@@ -170,6 +185,8 @@ All calls use **flex processing** by default (~50% off standard pricing). If fle
 
 - **`filing.markdown()` over `filing.text()`**: Preserves table structure, headings, and section hierarchy for better LLM comprehension
 - **Local Quantitative Scorecard**: Programmatically calculates Altman Z'-Score (Z-Prime), Piotroski F-Score, Beneish M-Score, and critical liquidity/leverage ratios. These ground-truth values are injected into the final synthesis prompt with verification rules to prevent LLM mathematical hallucinations.
+- **Structured decision brief contract**: The report UI is driven by `decision_brief.json` (`stance`, `conviction`, `thesis`, `upside_drivers`, `risk_drivers`, `key_catalysts`, `data_quality_flags`). This avoids brittle markdown parsing and keeps the HTML layer general across report shapes.
+- **HTML-first reporting**: Markdown remains the canonical long-form report, HTML is the readable product surface, and PDF is exported from the HTML when Chrome/Selenium is available.
 - **Insider 10b5-1 Discrimination**: Form 4 trades are audited using footnote scans to distinguish discretionary trades from pre-scheduled 10b5-1 executions, isolating higher-conviction signals.
 - **XBRL multi-year trends**: Injects 4-year financial history the LLM couldn't see from a single filing
 - **Insider trading signals**: Form 4 buys/sells are injected as raw data into the final synthesis — no extra LLM call, the model cross-references insider behavior with filing timeline
@@ -189,7 +206,7 @@ Typical cost per ticker (GPT-5.4, flex pricing):
 | Medium (~85K tokens) | ~$0.50 | **$0.00** | ~$0.08 |
 | Large (~230K tokens) | ~$1.00 | **$0.00** | ~$0.16 |
 
-The pipeline uses **ingredient-based caching**: it tracks filing accession numbers, transcript hashes, insider data hashes, and quant engine version. On repeat requests, only the LLM steps whose inputs actually changed are re-run. Cost summary is printed at the end of each run.
+The pipeline uses **ingredient-based caching**: it tracks filing accession numbers, transcript hashes, insider data hashes, quant engine version, final prompt version, report renderer version, and decision brief version. On repeat requests, only the LLM steps whose inputs actually changed are re-run. Cost summary is printed at the end of each run.
 
 ## Project Structure
 
@@ -207,6 +224,8 @@ The pipeline uses **ingredient-based caching**: it tracks filing accession numbe
     ├── config.py              # Environment loading, EDGAR identity setup
     ├── pipeline.py            # Pipeline orchestrator (cache-aware)
     ├── cache.py               # Ingredient-based cache manifests
+    ├── decision_brief.py      # Strict JSON contract for report UI
+    ├── report_renderer.py     # HTML/PDF rendering
     ├── mcp_server.py          # MCP server (4 tools)
     ├── cli.py                 # CLI entry point
     ├── scrapers.py            # Selenium-based transcript scraping

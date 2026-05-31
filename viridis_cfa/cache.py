@@ -3,7 +3,7 @@ Cache infrastructure for ViridisCFA ingredient-based pipeline caching.
 
 Each ticker gets a manifest at data/cache/{TICKER}.json that tracks:
 - The "ingredients" that went into the analysis (filing accession_no,
-  quant engine version, transcript hash, insider hash)
+  quant engine version, report UI versions, transcript hash, insider hash)
 - Paths to all generated artifacts
 - A history of runs with cost and cache-hit information
 
@@ -17,6 +17,12 @@ import hashlib
 from datetime import datetime, timezone
 
 CACHE_DIR = os.path.join("data", "cache")
+
+# Stable marker stored as the transcript "hash" when a scrape attempt completed but
+# found no transcript. Distinguishes "checked, none available" from "never checked",
+# so a no-transcript ticker reaches a steady cache state instead of re-running the
+# paid final synthesis (and re-scraping) on every single run.
+NO_TRANSCRIPT_SENTINEL = "__no_transcript__"
 
 
 def compute_hash(content: str) -> str:

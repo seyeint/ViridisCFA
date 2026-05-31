@@ -5,7 +5,9 @@ from typing import Dict, Tuple, List, Optional
 
 # Bump this version when calculation logic changes (scores, coefficients, etc.)
 # The cache system uses this to automatically invalidate stale expert analyses.
-QUANT_ENGINE_VERSION = "1.2"
+# v1.3: corrected Beneish TATA/LVGI coefficients; added business-model applicability gate.
+# v1.4: Beneish out-of-range guard; cash-runway metric.
+QUANT_ENGINE_VERSION = "1.4"
 
 # Synonyms for mapping standard GAAP items to raw EDGAR tags
 BALANCE_SHEET_MAP = {
@@ -418,22 +420,126 @@ def calculate_beneish_m(metrics: Dict[str, Dict[str, float]], year: str) -> Tupl
             tata = 0.0
             imputed.append("TATA (Accruals)")
             
-        # Beneish 8-variable model equation
-        m_score = (-4.84 + 
-                   (0.920 * dsri) + 
-                   (0.528 * gmi) + 
-                   (0.404 * aqi) + 
-                   (0.892 * sgi) + 
-                   (0.115 * depi) - 
-                   (0.172 * sgai) + 
-                   (4.037 * tata) + 
-                   (0.0327 * lvgi))
+        # Beneish 8-variable model equation (Beneish 1999, Financial Analysts Journal).
+        # Canonical coefficients — TATA = +4.679 and LVGI = -0.327. Do not "simplify"
+        # these: an earlier transcription used 4.037 and +0.0327, which biased every
+        # M-Score upward by ~+0.36 and flipped the leverage term's sign.
+        m_score = (-4.84 +
+                   (0.920 * dsri) +
+                   (0.528 * gmi) +
+                   (0.404 * aqi) +
+                   (0.892 * sgi) +
+                   (0.115 * depi) -
+                   (0.172 * sgai) +
+                   (4.679 * tata) -
+                   (0.327 * lvgi))
                    
         status = "High Risk (> -1.78)" if m_score > -1.78 else "Grey Zone (-2.22 to -1.78)" if m_score > -2.22 else "Low Risk (<= -2.22)"
         return m_score, status, [], imputed
         
     except Exception as e:
         return None, f"Calculation Error: {e}", ["Math Error"], []
+
+# SEC Division H (SIC 6000–6799): Finance, Insurance, Real Estate. For these issuers
+# Altman Z' (working-capital and sales-to-assets terms) and Beneish M (sales/accrual
+# structure) are category errors — banks/insurers/REITs don't run a classified
+# balance sheet or convert "sales" the way the models assume.
+FINANCIAL_SIC_RANGE = (6000, 6799)
+
+# Beneish M is a probit score calibrated on established firms; real companies fall well
+# inside this band. A value outside it is a small/early-stage numerical artifact (tiny
+# or volatile denominators blow up the component indices), not a real manipulation
+# signal — flag it advisory regardless of sector.
+BENEISH_MEANINGFUL_RANGE = (-5.0, 1.0)
+
+
+def beneish_out_of_meaningful_range(m_val) -> bool:
+    """True when a Beneish M-Score is outside its empirically meaningful band and
+    should not be read as a clean manipulation signal."""
+    if m_val is None:
+        return False
+    return not (BENEISH_MEANINGFUL_RANGE[0] <= m_val <= BENEISH_MEANINGFUL_RANGE[1])
+
+
+def cash_runway_years(cash, operating_cash_flow):
+    """Years of cash left at the current operating burn rate. Returns None when the
+    company is not burning operating cash (CFO >= 0) or inputs are missing — runway is
+    only a meaningful signal for cash-consuming issuers (where it matters far more than
+    a static liquidity ratio)."""
+    if cash is None or operating_cash_flow is None or operating_cash_flow >= 0:
+        return None
+    return cash / abs(operating_cash_flow)
+
+
+def classify_business_model(company, metrics, latest_year) -> Dict:
+    """Deterministically classify the issuer so the scorecard never presents model
+    output where the model does not apply. Uses only the SIC code and the
+    already-extracted financials — no extra network calls. Returns the archetype and
+    a per-model applicability verdict ('applicable' | 'advisory' | 'not_applicable')
+    plus plain-language caveats for the narrative layer.
+    """
+    sic = None
+    try:
+        raw_sic = getattr(company, "sic", None)
+        if raw_sic is not None and str(raw_sic).strip().isdigit():
+            sic = int(str(raw_sic).strip())
+    except Exception:
+        sic = None
+
+    revenue = metrics.get("revenue", {}).get(latest_year)
+    assets = metrics.get("total_assets", {}).get(latest_year)
+    rev_to_assets = (revenue / assets) if (revenue is not None and assets and assets > 0) else None
+
+    sgi = None
+    try:
+        prefix, year_num = latest_year[:3], int(latest_year[3:])
+        rev_prev = metrics.get("revenue", {}).get(f"{prefix}{year_num - 1}")
+        if revenue is not None and rev_prev not in (None, 0):
+            sgi = revenue / rev_prev
+    except Exception:
+        sgi = None
+
+    is_financial = sic is not None and FINANCIAL_SIC_RANGE[0] <= sic <= FINANCIAL_SIC_RANGE[1]
+    is_pre_revenue = (revenue is None) or (rev_to_assets is not None and rev_to_assets < 0.02)
+    is_hypergrowth = sgi is not None and sgi > 1.5
+
+    result = {
+        "sic": sic,
+        "archetype": "standard",
+        "altman": "applicable",
+        "beneish": "applicable",
+        "piotroski": "applicable",
+        "caveats": [],
+    }
+
+    if is_financial:
+        result.update({"archetype": "financial", "altman": "not_applicable",
+                       "beneish": "not_applicable", "piotroski": "advisory"})
+        result["caveats"].append(
+            f"Business model — financial / real-estate issuer (SIC {sic}). Altman Z' and Beneish M "
+            "assume a non-financial operating company with a classified balance sheet; they are not "
+            "meaningful here and are suppressed. Read Piotroski signals (ROA, turnover, margin) with "
+            "caution and prefer sector-appropriate measures (e.g. NIM, FFO, combined ratio)."
+        )
+    elif is_pre_revenue:
+        result.update({"archetype": "pre-revenue", "beneish": "not_applicable", "altman": "advisory"})
+        result["caveats"].append(
+            "Business model — pre-revenue / non-operating issuer (sales are negligible relative to "
+            "assets). Beneish M (built on sales-growth and gross-margin indices) is not meaningful and "
+            "is suppressed; a deeply negative Altman Z' reflects the absence of operating revenue, not "
+            "necessarily imminent insolvency — assess cash runway and burn rate instead."
+        )
+    elif is_hypergrowth:
+        result.update({"archetype": "hypergrowth", "beneish": "advisory"})
+        result["caveats"].append(
+            f"Business model — high revenue growth (sales up ~{(sgi - 1) * 100:.0f}% YoY). Beneish M "
+            "penalizes rapid sales and asset growth and routinely flags clean high-growth companies as "
+            "'High Risk'; treat any elevated M-Score as growth-driven rather than dispositive of "
+            "manipulation."
+        )
+
+    return result
+
 
 def generate_quant_scorecard(company) -> Tuple[str, Dict]:
     """Generates the Quantitative Financial Scorecard in Markdown"""
@@ -506,7 +612,8 @@ def generate_quant_scorecard(company) -> Tuple[str, Dict]:
         return "Incomplete data series to generate quantitative metrics.", {}
         
     latest_year = sorted_years[0]
-    
+    business_model = classify_business_model(company, metrics, latest_year)
+
     # Calculate scores for available years
     altman_results = {}
     piotroski_results = {}
@@ -516,7 +623,8 @@ def generate_quant_scorecard(company) -> Tuple[str, Dict]:
     quick_ratio_missing = {}
     debt_to_equity = {}
     fcf_yield = {}
-    
+    runway_years = {}
+
     for y in sorted_years:
         altman_results[y] = calculate_altman_z(metrics, y)
         piotroski_results[y] = calculate_piotroski_f(metrics, y)
@@ -569,10 +677,13 @@ def generate_quant_scorecard(company) -> Tuple[str, Dict]:
         else:
             fcf_yield[y] = None
 
+        # Cash runway (years) at the current operating burn — meaningful only when burning.
+        runway_years[y] = cash_runway_years(cash, cfo)
+
     # Let's format the Markdown Report
     lines = []
     lines.append("## DETERMINISTIC FINANCIAL ENGINEERING SCORECARD")
-    lines.append("This scorecard has been calculated programmatically in Python directly from verified SEC XBRL facts. These values are mathematically exact and represent ground-truth financials. **Do not recalculate or modify.**")
+    lines.append("These metrics are computed deterministically from the company's reported SEC XBRL facts. The arithmetic is exact — **do not recalculate or modify the values** — but each metric is only as meaningful as its fit to the company's business model. **Altman Z' and Beneish M assume a non-financial, revenue-generating operating company; see Applicability Notes below.**")
     lines.append("")
     
     # 1. Summary table for the latest year
@@ -582,60 +693,107 @@ def generate_quant_scorecard(company) -> Tuple[str, Dict]:
     
     # Altman Z'
     z_val, z_stat, z_missing = altman_results[latest_year]
-    if z_val is not None:
-        z_status = "`Programmatically Verified`"
+    if business_model['altman'] == 'not_applicable':
+        lines.append("| **Altman Z'-Score (Z-Prime)** | `NOT APPLICABLE` | Not meaningful for this business model — see Applicability Notes | `Not applicable for this business model` |")
+    elif z_val is not None:
+        z_status = "`Programmatically Computed`"
         if any(d['year'] == latest_year and d['metric'] in ('total_liabilities', 'equity') for d in derived_fields):
-            z_status = "`Verified (with derived balance-sheet inputs)`"
-        lines.append(f"| **Altman Z'-Score (Z-Prime)** | `{z_val:.2f}` | {z_stat} | {z_status} |")
+            z_status = "`Computed (derived balance-sheet inputs)`"
+        z_interp = z_stat
+        if business_model['altman'] == 'advisory':
+            z_interp = f"{z_stat} — advisory; see Applicability Notes"
+            z_status = "`Computed (applicability caveat)`"
+        lines.append(f"| **Altman Z'-Score (Z-Prime)** | `{z_val:.2f}` | {z_interp} | {z_status} |")
     else:
         lines.append(f"| **Altman Z'-Score (Z-Prime)** | `UNABLE TO COMPUTE` | Missing: {', '.join(z_missing)} | `MISSING - Footnotes Search Required` |")
         
     # Piotroski F
     f_val, f_points, f_missing = piotroski_results[latest_year]
     if f_val is not None:
-        lines.append(f"| **Piotroski F-Score** | `{f_val}/9` | Strength: {'Strong (8-9)' if f_val >= 8 else 'Moderate (3-7)' if f_val >= 3 else 'Weak (0-2)'} | `Programmatically Verified` |")
+        strength = 'Strong (8-9)' if f_val >= 8 else 'Moderate (3-7)' if f_val >= 3 else 'Weak (0-2)'
+        f_status = "`Programmatically Computed`"
+        if business_model['piotroski'] == 'advisory':
+            strength = f"{strength} — advisory; see Applicability Notes"
+            f_status = "`Computed (applicability caveat)`"
+        lines.append(f"| **Piotroski F-Score** | `{f_val}/9` | Strength: {strength} | {f_status} |")
     else:
         lines.append(f"| **Piotroski F-Score** | `UNABLE TO COMPUTE` | Missing: {', '.join(f_missing)} | `MISSING - Footnotes Search Required` |")
         
     # Beneish M
     m_val, m_stat, m_missing, m_imputed = beneish_results[latest_year]
-    if m_val is not None:
+    if business_model['beneish'] == 'not_applicable':
+        lines.append("| **Beneish M-Score** | `NOT APPLICABLE` | Not meaningful for this business model — see Applicability Notes | `Not applicable for this business model` |")
+    elif m_val is not None:
         imputed_note = ""
-        verification = "`Programmatically Verified`"
+        verification = "`Programmatically Computed`"
         if m_imputed:
             imputed_note = f" ⚠️ {len(m_imputed)}/8 components defaulted to neutral: {', '.join(m_imputed)}. Score may understate risk."
-            verification = "`Verified (with imputed components)`"
-        lines.append(f"| **Beneish M-Score** | `{m_val:.2f}` | {m_stat}{imputed_note} | {verification} |")
+            verification = "`Computed (imputed components)`"
+        m_interp = f"{m_stat}{imputed_note}"
+        if beneish_out_of_meaningful_range(m_val):
+            m_interp = f"{m_stat} — advisory: outside the model's meaningful range, so the indices are numerically unstable (typical of very small or early-stage issuers); not a clean manipulation signal{imputed_note}"
+            verification = "`Computed (advisory — out of range)`"
+            business_model['caveats'].append(
+                f"Beneish M-Score ({m_val:.2f}) is outside the model's empirically meaningful range; for very "
+                "small or early-stage issuers the component indices are numerically unstable, so it is not a "
+                "reliable earnings-manipulation signal."
+            )
+        elif business_model['beneish'] == 'advisory':
+            m_interp = f"{m_stat} — advisory (high-growth false positives likely); see Applicability Notes{imputed_note}"
+            verification = "`Computed (applicability caveat)`"
+        lines.append(f"| **Beneish M-Score** | `{m_val:.2f}` | {m_interp} | {verification} |")
     else:
         lines.append(f"| **Beneish M-Score** | `UNABLE TO COMPUTE` | Missing: {', '.join(m_missing)} | `MISSING - Footnotes Search Required` |")
         
     # Ratios
     cr = current_ratio.get(latest_year)
     if cr is not None:
-        lines.append(f"| **Current Ratio** | `{cr:.2f}` | Liquidity buffer | `Programmatically Verified` |")
+        lines.append(f"| **Current Ratio** | `{cr:.2f}` | Liquidity buffer | `Programmatically Computed` |")
     else:
         lines.append(f"| **Current Ratio** | `UNABLE TO COMPUTE` | Missing Current Assets or Liabilities | `MISSING - Footnotes Search Required` |")
         
     qr = quick_ratio.get(latest_year)
     if qr is not None:
-        lines.append(f"| **Quick Ratio** | `{qr:.2f}` | Immediate cash coverage | `Programmatically Verified` |")
+        lines.append(f"| **Quick Ratio** | `{qr:.2f}` | Immediate cash coverage | `Programmatically Computed` |")
     else:
         missing_qr = ", ".join(quick_ratio_missing.get(latest_year, ["Cash or Receivables"]))
         lines.append(f"| **Quick Ratio** | `UNABLE TO COMPUTE` | Missing: {missing_qr} | `MISSING - Footnotes Search Required` |")
         
     de = debt_to_equity.get(latest_year)
     if de is not None:
-        de_status = "`Programmatically Verified`"
+        de_status = "`Programmatically Computed`"
         if any(d['year'] == latest_year and d['metric'] in ('total_liabilities', 'equity') for d in derived_fields):
-            de_status = "`Verified (with derived balance-sheet inputs)`"
+            de_status = "`Computed (derived balance-sheet inputs)`"
         lines.append(f"| **Debt-to-Equity** | `{de:.2f}` | Leverage ratio | {de_status} |")
         
     fcfy = fcf_yield.get(latest_year)
     if fcfy is not None:
-        lines.append(f"| **FCF / Assets Yield** | `{fcfy * 100:.2f}%` | Return on capital asset efficiency | `Programmatically Verified` |")
-        
+        lines.append(f"| **FCF / Assets Yield** | `{fcfy * 100:.2f}%` | Return on capital asset efficiency | `Programmatically Computed` |")
+
+    rwy = runway_years.get(latest_year)
+    ocf_latest = metrics['operating_cash_flow'].get(latest_year)
+    if rwy is not None:
+        if rwy >= 3:
+            rwy_verdict = "ample"
+        elif rwy >= 1.5:
+            rwy_verdict = "adequate"
+        elif rwy >= 0.75:
+            rwy_verdict = "tightening"
+        else:
+            rwy_verdict = "critical (under ~9 months of cash)"
+        lines.append(f"| **Cash Runway** | `{rwy:.1f} yrs` | Cash / current operating burn — {rwy_verdict} | `Programmatically Computed` |")
+    elif ocf_latest is not None and ocf_latest >= 0:
+        lines.append("| **Cash Runway** | `N/A` | Operating cash flow positive — self-funding, not burning | `Programmatically Computed` |")
+
     lines.append("")
     
+    # Applicability notes — surfaced when a model does not fit the issuer's business model.
+    if business_model['caveats']:
+        lines.append("### Applicability Notes")
+        for caveat in business_model['caveats']:
+            lines.append(f"- {caveat}")
+        lines.append("")
+
     # 2. Historical Trend Table
     lines.append("### 4-Year Historical Trends")
     headers = ["Metric"] + sorted_years
@@ -691,7 +849,14 @@ def generate_quant_scorecard(company) -> Tuple[str, Dict]:
         val = fcf_yield.get(y)
         fcf_row.append(f"`{val * 100:.2f}%`" if val is not None else "`N/A`")
     lines.append(" | ".join(fcf_row))
-    
+
+    # Cash Runway
+    rwy_row = ["**Cash Runway**"]
+    for y in sorted_years:
+        val = runway_years.get(y)
+        rwy_row.append(f"`{val:.1f} yrs`" if val is not None else "`N/A`")
+    lines.append(" | ".join(rwy_row))
+
     lines.append("")
     
     # Methodology definitions — self-documenting for audit/reproducibility
@@ -699,8 +864,10 @@ def generate_quant_scorecard(company) -> Tuple[str, Dict]:
     lines.append(f"- **Engine Version**: `{QUANT_ENGINE_VERSION}`")
     lines.append("- **Altman Z'-Score (Z-Prime)**: Book-value variant (private firm model). Coefficients: 0.717×X1 + 0.847×X2 + 3.107×X3 + 0.420×X4 + 0.998×X5. Thresholds: Safe > 2.90, Grey 1.23–2.90, Distress < 1.23.")
     lines.append("- **Piotroski F-Score**: 9-point binary scoring across profitability (4), leverage/liquidity (3), and operating efficiency (2). Higher is stronger.")
-    lines.append("- **Beneish M-Score**: 8-variable model (Beneish 1999). Thresholds: M > −1.78 = High Risk, −2.22 to −1.78 = Grey Zone, M ≤ −2.22 = Low Risk. Components defaulted to neutral (1.0) when XBRL data is unavailable are flagged.")
+    lines.append("- **Beneish M-Score**: 8-variable model (Beneish 1999): −4.84 + 0.920·DSRI + 0.528·GMI + 0.404·AQI + 0.892·SGI + 0.115·DEPI − 0.172·SGAI + 4.679·TATA − 0.327·LVGI. Thresholds: M > −1.78 = High Risk, −2.22 to −1.78 = Grey Zone, M ≤ −2.22 = Low Risk. Components defaulted to neutral (1.0) when XBRL data is unavailable are flagged.")
     lines.append("- **Quick Ratio**: (Cash + Receivables) / Current Liabilities. Not computed if cash, receivables, or current liabilities are missing from the XBRL statement extraction.")
+    lines.append("- **Cash Runway**: Cash & equivalents / annual operating cash burn, shown only when operating cash flow is negative. A business-model-agnostic solvency read for cash-consuming issuers; `N/A` means the company is operating-cash-flow positive.")
+    lines.append(f"- **Business-Model Applicability**: archetype = `{business_model['archetype']}` (SIC `{business_model['sic']}`). Altman Z' and Beneish M assume a non-financial, revenue-generating operating company; they are suppressed for financial/real-estate issuers (SIC 6000–6799) and pre-revenue issuers, and flagged advisory for hypergrowth names, where the models read structurally misleading.")
 
     latest_derived = [d for d in derived_fields if d['year'] == latest_year]
     if latest_derived:
@@ -724,11 +891,14 @@ def generate_quant_scorecard(company) -> Tuple[str, Dict]:
         'quick_ratio': quick_ratio.get(latest_year),
         'debt_to_equity': debt_to_equity.get(latest_year),
         'fcf_yield': fcf_yield.get(latest_year),
+        'cash_runway_years': runway_years.get(latest_year),
         'all_years': sorted_years,
         'quant_engine_version': QUANT_ENGINE_VERSION,
         'beneish_imputed_components': latest_imputed,
         'quick_ratio_missing_components': quick_ratio_missing.get(latest_year, []),
         'derived_balance_sheet_fields': latest_derived,
+        'business_model': business_model,
+        'business_model_archetype': business_model['archetype'],
     }
     
     return "\n".join(lines), metadata

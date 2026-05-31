@@ -5,6 +5,7 @@ from openai import RateLimitError, APITimeoutError
 
 # Local package imports
 from prompt_configs import (
+    FINAL_PROMPT_VERSION,
     expert_analysis_prompt_template,
     missing_analysis_prompt_template,
     transcript_prompt_template,
@@ -16,6 +17,47 @@ from viridis_cfa.scrapers import get_transcript, html_to_markdown
 from viridis_cfa.insider import get_insider_activity
 from viridis_cfa.config import get_openai_client
 from viridis_cfa.report_renderer import REPORT_RENDERER_VERSION, write_report_artifacts
+from viridis_cfa.decision_brief import (
+    DECISION_BRIEF_VERSION,
+    DECISION_BRIEF_JSON_SCHEMA,
+    build_decision_brief_prompt,
+    parse_decision_brief_json,
+    write_decision_brief,
+)
+
+
+def _log_response_cost(response, model, service_tier):
+    actual_prompt_tokens = response.usage.input_tokens
+    actual_completion_tokens = response.usage.output_tokens
+    reasoning_tokens = getattr(response.usage.output_tokens_details, 'reasoning_tokens', 0) or 0
+    visible_tokens = actual_completion_tokens - reasoning_tokens
+    cached_input = getattr(response.usage.input_tokens_details, 'cached_tokens', 0) or 0
+    used_tier = getattr(response, 'service_tier', service_tier) or service_tier
+    used_model = getattr(response, 'model', model) or model
+
+    actual_costs = calculate_actual_cost(
+        actual_prompt_tokens,
+        actual_completion_tokens,
+        used_model,
+        service_tier=used_tier,
+        cached_input_tokens=cached_input,
+    )
+    standard_costs = calculate_actual_cost(
+        actual_prompt_tokens,
+        actual_completion_tokens,
+        used_model,
+        service_tier="standard",
+        cached_input_tokens=cached_input,
+    )
+
+    savings = standard_costs['total_cost'] - actual_costs['total_cost']
+    savings_note = ""
+    if savings > 0.00001:
+        savings_note = f" | Standard equivalent: ${standard_costs['total_cost']:.4f} | Saved: ${savings:.4f}"
+
+    print(f"Tokens — input: {actual_prompt_tokens:,} (cached: {cached_input:,}) | output: {visible_tokens:,} | reasoning: {reasoning_tokens:,}")
+    print(f"Actual billed estimate: ${actual_costs['total_cost']:.4f} | Tier: {used_tier} | Pricing: {actual_costs['context_band']} context{savings_note}")
+    return actual_costs['total_cost']
 
 def run_analysis(prompt, model="gpt-5.4", reasoning_effort="medium", service_tier="flex"):
     """Run analysis using OpenAI Responses API with configurable reasoning and pricing tier.
@@ -45,6 +87,7 @@ def run_analysis(prompt, model="gpt-5.4", reasoning_effort="medium", service_tie
             service_tier=tier,
         )
     
+    billed_tier = service_tier
     try:
         response = _call(service_tier)
         
@@ -52,7 +95,8 @@ def run_analysis(prompt, model="gpt-5.4", reasoning_effort="medium", service_tie
         if service_tier == "flex":
             print(f"Flex unavailable, falling back to standard: {e}")
             try:
-                response = _call("auto")
+                billed_tier = "auto"
+                response = _call(billed_tier)
             except Exception as e2:
                 print(f"Standard fallback also failed: {e2}")
                 return None
@@ -73,41 +117,70 @@ def run_analysis(prompt, model="gpt-5.4", reasoning_effort="medium", service_tie
         print(f"Error: {e}")
         return None
     
-    # Calculate actual cost from usage
-    actual_prompt_tokens = response.usage.input_tokens
-    actual_completion_tokens = response.usage.output_tokens
-    
-    # Log token breakdown (reasoning tokens are billed as output tokens)
-    reasoning_tokens = getattr(response.usage.output_tokens_details, 'reasoning_tokens', 0) or 0
-    visible_tokens = actual_completion_tokens - reasoning_tokens
-    cached_input = getattr(response.usage.input_tokens_details, 'cached_tokens', 0) or 0
-    used_tier = getattr(response, 'service_tier', service_tier) or service_tier
-    used_model = getattr(response, 'model', model) or model
-    
-    actual_costs = calculate_actual_cost(
-        actual_prompt_tokens, 
-        actual_completion_tokens, 
-        used_model,
-        service_tier=used_tier,
-        cached_input_tokens=cached_input,
-    )
-    standard_costs = calculate_actual_cost(
-        actual_prompt_tokens,
-        actual_completion_tokens,
-        used_model,
-        service_tier="standard",
-        cached_input_tokens=cached_input,
-    )
-    
-    savings = standard_costs['total_cost'] - actual_costs['total_cost']
-    savings_note = ""
-    if savings > 0.00001:
-        savings_note = f" | Standard equivalent: ${standard_costs['total_cost']:.4f} | Saved: ${savings:.4f}"
+    return response.output_text, _log_response_cost(response, model, billed_tier)
 
-    print(f"Tokens — input: {actual_prompt_tokens:,} (cached: {cached_input:,}) | output: {visible_tokens:,} | reasoning: {reasoning_tokens:,}")
-    print(f"Actual billed estimate: ${actual_costs['total_cost']:.4f} | Tier: {used_tier} | Pricing: {actual_costs['context_band']} context{savings_note}")
-    
-    return response.output_text, actual_costs['total_cost']
+
+def run_json_analysis(prompt, schema, model="gpt-5.4", reasoning_effort="low", service_tier="flex"):
+    """Run a structured JSON Responses API call and return (text, cost)."""
+    client = get_openai_client()
+    if not client:
+        print("OpenAI API client not initialized. Check OPENAI_API_KEY.")
+        return None
+
+    prompt_tokens = count_tokens(prompt)
+    print(f"Prompt contains approximately {prompt_tokens:,} tokens")
+    estimated_costs = estimate_cost(prompt_tokens, model, service_tier=service_tier)
+    print(f"Estimated cost: ${estimated_costs['total_cost']:.4f} ({service_tier} tier)")
+    print(f"Reasoning: {reasoning_effort} | Tier: {service_tier}")
+
+    text_config = {
+        "format": {
+            "type": "json_schema",
+            "name": "decision_brief",
+            "schema": schema,
+            "strict": True,
+        },
+        "verbosity": "low",
+    }
+
+    def _call(tier):
+        return client.with_options(timeout=900).responses.create(
+            model=model,
+            instructions="You produce exact structured JSON for financial research UI contracts.",
+            input=prompt,
+            reasoning={"effort": reasoning_effort},
+            service_tier=tier,
+            text=text_config,
+        )
+
+    billed_tier = service_tier
+    try:
+        response = _call(service_tier)
+    except RateLimitError as e:
+        if service_tier == "flex":
+            print(f"Flex unavailable, falling back to standard: {e}")
+            try:
+                billed_tier = "auto"
+                response = _call(billed_tier)
+            except Exception as e2:
+                print(f"Standard fallback also failed: {e2}")
+                return None
+        else:
+            print(f"Rate limited: {e}")
+            time.sleep(30)
+            try:
+                response = _call(service_tier)
+            except Exception as e2:
+                print(f"Retry failed: {e2}")
+                return None
+    except APITimeoutError as e:
+        print(f"Request timed out: {e}")
+        return None
+    except Exception as e:
+        print(f"Error: {e}")
+        return None
+
+    return response.output_text, _log_response_cost(response, model, billed_tier)
 
 def get_multi_year_trends(company):
     """Fetch multi-year financial trends from XBRL EntityFacts.
@@ -182,8 +255,16 @@ def process_filing(ticker, filing, company=None, no_cache=False):
         trend_context = ""
         quant_scorecard_md = ""
         if company:
+            xbrl_company = company
+            try:
+                # Keep XBRL/EntityFacts reads off the Company instance used by
+                # the insider branch when pipeline branches run concurrently.
+                xbrl_company = Company(ticker)
+            except Exception as company_err:
+                print(f"Could not create isolated XBRL Company object; reusing existing company: {company_err}")
+
             print("Fetching multi-year financial trends from XBRL...")
-            trend_context = get_multi_year_trends(company)
+            trend_context = get_multi_year_trends(xbrl_company)
             if trend_context:
                 print(f"Added {count_tokens(trend_context):,} tokens of historical context")
                 # Save trend context for reference
@@ -198,7 +279,7 @@ def process_filing(ticker, filing, company=None, no_cache=False):
             try:
                 from quant_engine import generate_quant_scorecard
                 print("Calculating deterministic quantitative scorecard...")
-                quant_scorecard_md, _ = generate_quant_scorecard(company)
+                quant_scorecard_md, _ = generate_quant_scorecard(xbrl_company)
                 
                 # Save scorecard to filings folder
                 scorecard_filename = f"{ticker}-{safe_form}-{filing.filing_date}-quant-scorecard.md"
@@ -318,6 +399,29 @@ def _source_artifact_paths(ticker, filing_form, filing_date, has_transcript=Fals
     }
 
 
+def create_decision_brief_artifact(ticker, final_analysis, decision_brief_path):
+    """Create the structured UI contract consumed by the HTML renderer."""
+    print("\n--- Running Decision Brief Structuring ---")
+    decision_brief_prompt = build_decision_brief_prompt(ticker, final_analysis)
+    brief_result = run_json_analysis(decision_brief_prompt, DECISION_BRIEF_JSON_SCHEMA)
+    brief_text, brief_cost = brief_result if brief_result else (None, 0)
+    if not brief_text:
+        raise RuntimeError(
+            f"Decision brief generation failed for {ticker}; company HTML requires "
+            f"{os.path.basename(decision_brief_path)}"
+        )
+
+    try:
+        decision_brief = parse_decision_brief_json(brief_text, ticker)
+        write_decision_brief(decision_brief_path, decision_brief)
+        print(f"Decision brief saved to intermediate/{os.path.basename(decision_brief_path)}")
+    except Exception as brief_err:
+        raise RuntimeError(
+            f"Decision brief parsing failed for {ticker}; company HTML requires valid structured JSON"
+        ) from brief_err
+    return brief_cost
+
+
 def create_final_analysis(ticker, expert_analysis, missing_analysis, transcript_analysis=None, filing_date=None, transcript_date=None, insider_activity=None, filing_accession_no=None, filing_form=None):
     """Create the final analysis from all components. Transcript and insider data are optional."""
     if not (expert_analysis and missing_analysis):
@@ -361,6 +465,21 @@ def create_final_analysis(ticker, expert_analysis, missing_analysis, transcript_
     final_analysis, cost = result if result else (None, 0)
     
     if final_analysis:
+        # The final synthesis emits the memo followed by a fenced JSON decision brief.
+        # Pull it out here so the brief is generated in the SAME call as the memo it
+        # summarizes (consistent by construction, one fewer paid round-trip). Falls back
+        # to a separate structuring call if the model didn't emit a usable block.
+        from viridis_cfa.decision_brief import (
+            extract_and_strip_brief_json, parse_decision_brief_json, write_decision_brief,
+        )
+        final_analysis, inline_brief_json = extract_and_strip_brief_json(final_analysis)
+        inline_brief = None
+        if inline_brief_json:
+            try:
+                inline_brief = parse_decision_brief_json(inline_brief_json, ticker)
+            except Exception as brief_err:
+                print(f"Inline decision brief unparseable ({brief_err}); will structure separately")
+
         # Append provenance footer (deterministic — LLM cannot omit or rephrase)
         from quant_engine import QUANT_ENGINE_VERSION
         from datetime import datetime, timezone
@@ -374,6 +493,7 @@ def create_final_analysis(ticker, expert_analysis, missing_analysis, transcript_
             "---",
             "##### Report Provenance",
             f"- **Quant Engine**: v{QUANT_ENGINE_VERSION}",
+            f"- **Final Prompt**: v{FINAL_PROMPT_VERSION}",
             f"- **Model**: {_model} ({_tier})",
             f"- **Filing**: {filing_date or 'N/A'} | Accession: `{filing_accession_no or 'N/A'}`",
             f"- **Generated**: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
@@ -391,6 +511,14 @@ def create_final_analysis(ticker, expert_analysis, missing_analysis, transcript_
             f.write(final_analysis)
         print(f"Final analysis saved to intermediate/{md_filename}")
 
+        decision_brief_filename = f"{ticker}_decision_brief.json"
+        decision_brief_path = os.path.join(intermediate_dir, decision_brief_filename)
+        if inline_brief:
+            write_decision_brief(decision_brief_path, inline_brief)
+            print(f"Decision brief parsed inline from final synthesis (no separate call) → intermediate/{decision_brief_filename}")
+        else:
+            cost += create_decision_brief_artifact(ticker, final_analysis, decision_brief_path)
+
         html_filename = f"{ticker}_final_report.html"
         html_path = os.path.join(intermediate_dir, html_filename)
         pdf_filename = f"{ticker}_final_report.pdf"
@@ -404,6 +532,7 @@ def create_final_analysis(ticker, expert_analysis, missing_analysis, transcript_
             'final_report_md': md_path,
             'final_report_html': html_path,
             'final_report_pdf': pdf_path,
+            'decision_brief': decision_brief_path,
         })
 
         written = write_report_artifacts(ticker, final_analysis, artifact_paths, html_path, pdf_path)
@@ -449,10 +578,11 @@ def analyze_ticker(ticker, no_cache=False):
     hash-compared. Transcript is re-scraped only when the filing quarter changes or
     no transcript was previously available.
     """
+
     from concurrent.futures import ThreadPoolExecutor
     from viridis_cfa.cache import (
         load_manifest, save_manifest, check_artifacts_exist,
-        compute_hash, now_iso
+        compute_hash, now_iso, NO_TRANSCRIPT_SENTINEL
     )
     from quant_engine import QUANT_ENGINE_VERSION
     
@@ -505,10 +635,21 @@ def analyze_ticker(ticker, no_cache=False):
     filing_stale = (not manifest or
                     cached.get('filing_accession_no') != filing.accession_no or
                     cached.get('quant_engine_version') != QUANT_ENGINE_VERSION)
-    renderer_stale = bool(manifest and cached.get('report_renderer_version') != REPORT_RENDERER_VERSION)
+    renderer_stale = bool(
+        manifest and (
+            cached.get('report_renderer_version') != REPORT_RENDERER_VERSION or
+            cached.get('decision_brief_version') != DECISION_BRIEF_VERSION
+        )
+    )
+    final_prompt_stale = bool(
+        manifest and cached.get('final_prompt_version') != FINAL_PROMPT_VERSION
+    )
     
-    # Transcript: re-scrape if quarter changed or no transcript was cached previously
-    transcript_stale = (filing_stale or not cached.get('transcript_hash'))
+    # Transcript: re-scrape if the filing (quarter) changed, or if we have never
+    # recorded a transcript decision for it. A prior "no transcript available" result
+    # is persisted as NO_TRANSCRIPT_SENTINEL (non-None), so it does NOT force a
+    # re-scrape + paid re-synthesis on every run — only None (never attempted) does.
+    transcript_stale = (filing_stale or cached.get('transcript_hash') is None)
     
     # Log cache status
     if no_cache:
@@ -524,6 +665,8 @@ def analyze_ticker(ticker, no_cache=False):
         print(f"[CACHE] Filing stale ({', '.join(reasons)}) — full re-analysis required")
     elif transcript_stale:
         print("[CACHE] Filing cached ✓ | Transcript not yet cached — will attempt scrape")
+    elif final_prompt_stale:
+        print("[CACHE] Final prompt updated — final synthesis will re-run")
     elif renderer_stale:
         print("[CACHE] Analysis cached ✓ | Report renderer updated — will refresh HTML/PDF artifacts")
     else:
@@ -533,27 +676,27 @@ def analyze_ticker(ticker, no_cache=False):
     total_cost = 0
     steps_run = []
     cache_hits = []
-    
+
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = {}
-        
+
         # Branch 1: Filing analysis (only if stale)
         if filing_stale:
             futures['filing'] = executor.submit(
                 process_filing, ticker, filing, company, no_cache=True
             )
-        
+
         # Branch 2: Transcript (only if stale)
         if transcript_stale:
             futures['transcript'] = executor.submit(
                 process_transcript, ticker, no_cache=True
             )
-        
+
         # Branch 3: Insider data (always fetch — cheap, continuous updates)
         futures['insider'] = executor.submit(
             get_insider_activity, company, filing.filing_date
         )
-        
+
         # ── Collect filing results ──
         if 'filing' in futures:
             expert_analysis, missing_analysis, filing_cost = futures['filing'].result()
@@ -564,7 +707,7 @@ def analyze_ticker(ticker, no_cache=False):
             missing_analysis = _read_file(manifest['artifacts']['missing_analysis'])
             cache_hits += ['expert', 'missing']
             print(f"[CACHE HIT] Reusing expert + missing analyses for {ticker}")
-        
+
         # ── Collect transcript results ──
         if 'transcript' in futures:
             transcript_analysis, transcript_cost = futures['transcript'].result()
@@ -580,10 +723,10 @@ def analyze_ticker(ticker, no_cache=False):
                 transcript_analysis = None
         else:
             transcript_analysis = None
-        
+
         # ── Collect insider results (always fresh) ──
         insider_activity = futures['insider'].result()
-    
+
     elapsed = time.time() - start_time
     print(f"\nData collection completed in {elapsed:.1f}s")
     
@@ -607,16 +750,19 @@ def analyze_ticker(ticker, no_cache=False):
         print("[CACHE] Insider activity changed — final synthesis will re-run")
     
     # ── Compute transcript hash for manifest ──
-    if 'transcript' in futures and transcript_analysis:
-        transcript_hash = compute_hash(transcript_analysis)
+    # If we attempted a scrape this run, store the content hash when a transcript was
+    # found, else a stable sentinel so "none available" is remembered (and not
+    # re-scraped + re-synthesized every run) until the filing changes.
+    if 'transcript' in futures:
+        transcript_hash = compute_hash(transcript_analysis) if transcript_analysis else NO_TRANSCRIPT_SENTINEL
     elif manifest:
         transcript_hash = cached.get('transcript_hash')
     else:
-        transcript_hash = None
+        transcript_hash = NO_TRANSCRIPT_SENTINEL
     
     # ── Final synthesis ──
     # Re-run if any upstream ingredient changed
-    need_final = filing_stale or transcript_stale or insider_changed
+    need_final = filing_stale or transcript_stale or insider_changed or final_prompt_stale
     final_text = None
     
     if need_final and expert_analysis and missing_analysis:
@@ -653,6 +799,13 @@ def analyze_ticker(ticker, no_cache=False):
             md_path = manifest['artifacts']['final_report_md']
             html_path = os.path.join("data", "intermediate", f"{ticker}_final_report.html")
             pdf_path = os.path.join("data", f"{ticker}_final_report.pdf")
+            decision_brief_path = os.path.join("data", "intermediate", f"{ticker}_decision_brief.json")
+            if (
+                not os.path.exists(decision_brief_path) or
+                cached.get('decision_brief_version') != DECISION_BRIEF_VERSION
+            ):
+                total_cost += create_decision_brief_artifact(ticker, final_text, decision_brief_path)
+                steps_run.append('brief')
             artifact_paths = _source_artifact_paths(
                 ticker, filing.form, filing.filing_date,
                 has_transcript=bool(transcript_analysis),
@@ -662,6 +815,7 @@ def analyze_ticker(ticker, no_cache=False):
                 'final_report_md': md_path,
                 'final_report_html': html_path,
                 'final_report_pdf': pdf_path,
+                'decision_brief': decision_brief_path,
             })
             write_report_artifacts(ticker, final_text, artifact_paths, html_path, pdf_path)
             steps_run.append('render')
@@ -707,6 +861,11 @@ def analyze_ticker(ticker, no_cache=False):
             f"{ticker}_final_report.md"),
         'final_report_html': os.path.join("data", "intermediate",
             f"{ticker}_final_report.html"),
+        'decision_brief': (
+            os.path.join("data", "intermediate", f"{ticker}_decision_brief.json")
+            if os.path.exists(os.path.join("data", "intermediate", f"{ticker}_decision_brief.json"))
+            else None
+        ),
         'final_report_pdf': os.path.join("data",
             f"{ticker}_final_report.pdf"),
     }
@@ -719,7 +878,9 @@ def analyze_ticker(ticker, no_cache=False):
             'filing_form': filing.form,
             'filing_date': str(filing.filing_date),
             'quant_engine_version': QUANT_ENGINE_VERSION,
+            'final_prompt_version': FINAL_PROMPT_VERSION,
             'report_renderer_version': REPORT_RENDERER_VERSION,
+            'decision_brief_version': DECISION_BRIEF_VERSION,
             'transcript_hash': transcript_hash,
             'insider_hash': insider_hash,
         },
