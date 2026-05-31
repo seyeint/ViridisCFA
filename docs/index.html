@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ViridisCFA — Architecture &amp; Design</title>
+<style>
+:root {
+    color-scheme: light;
+    --paper: #f7f8f4;
+    --surface: #ffffff;
+    --surface-muted: #f1f3ed;
+    --ink: #141a17;
+    --muted: #626d66;
+    --line: #dde2d8;
+    --line-strong: #c6cdc1;
+    --accent: #0f766e;
+    --accent-soft: #e3efed;
+    --blue: #1d4ed8;
+    --positive: #147447;
+    --watch: #8a6200;
+    --negative: #b42318;
+    --neutral: #475569;
+    --positive-soft: #e8f5ed;
+    --watch-soft: #fff4d6;
+    --negative-soft: #fce9e4;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 16px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+code, .mono { font-family: var(--mono); font-size: 0.86em; }
+.report-body code, p code, li code, td code {
+    background: var(--surface-muted);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 1px 5px;
+}
+
+/* ── Top bar ── */
+.topbar {
+    position: sticky; top: 0; z-index: 20;
+    background: rgba(247, 248, 244, 0.88);
+    backdrop-filter: saturate(180%) blur(8px);
+    border-bottom: 1px solid var(--line);
+}
+.topbar-inner {
+    max-width: 1080px; margin: 0 auto; padding: 12px 24px;
+    display: flex; align-items: center; justify-content: space-between; gap: 18px;
+}
+.brand { display: inline-flex; align-items: center; gap: 10px; color: var(--ink); font-weight: 800;
+    letter-spacing: 0.04em; text-transform: uppercase; font-size: 13px; text-decoration: none; }
+.brand-mark { width: 20px; height: 20px; border: 2px solid var(--accent); border-radius: 50%;
+    position: relative; display: inline-block; flex: none; }
+.brand-mark::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--watch);
+    position: absolute; right: -3px; bottom: -3px; }
+.topnav { display: flex; gap: 20px; font-size: 13px; }
+.topnav a { color: var(--muted); text-decoration: none; }
+.topnav a:hover { color: var(--accent); }
+
+/* ── Layout ── */
+.shell { max-width: 1080px; margin: 0 auto; padding: 0 24px 80px; }
+.hero { padding: 64px 0 40px; border-bottom: 1px solid var(--line-strong); }
+.eyebrow { color: var(--accent); font-size: 12px; font-weight: 800; letter-spacing: 0.14em;
+    text-transform: uppercase; margin: 0 0 14px; }
+h1 { margin: 0; font-size: clamp(38px, 6vw, 66px); line-height: 0.98; letter-spacing: -0.01em; }
+.lede { margin: 20px 0 0; font-size: 20px; line-height: 1.5; color: #2c352f; max-width: 760px; }
+.hero-meta { margin-top: 26px; display: flex; flex-wrap: wrap; gap: 10px; }
+.chip { font-size: 12.5px; font-weight: 650; color: var(--muted); background: var(--surface);
+    border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px; }
+.chip strong { color: var(--ink); font-weight: 800; }
+
+section { padding: 52px 0 8px; border-bottom: 1px solid var(--line); }
+section:last-of-type { border-bottom: 0; }
+.sec-eyebrow { color: var(--muted); font-size: 11.5px; font-weight: 800; letter-spacing: 0.12em;
+    text-transform: uppercase; margin: 0 0 8px; }
+h2 { margin: 0 0 6px; font-size: clamp(26px, 3.6vw, 36px); line-height: 1.12; letter-spacing: -0.01em; }
+h3 { margin: 34px 0 8px; font-size: 19px; }
+.section-intro { font-size: 18px; color: #2c352f; max-width: 760px; margin: 14px 0 30px; }
+p { margin: 14px 0; max-width: 760px; }
+.muted { color: var(--muted); }
+strong { font-weight: 720; }
+
+/* ── Pull quote / key insight ── */
+.insight {
+    margin: 30px 0; padding: 22px 26px; background: var(--accent-soft);
+    border-left: 4px solid var(--accent); border-radius: 0 8px 8px 0;
+    font-size: 20px; line-height: 1.45; font-weight: 600; color: #103b37; max-width: none;
+}
+.insight .by { display: block; margin-top: 8px; font-size: 13px; font-weight: 700; letter-spacing: 0.04em;
+    text-transform: uppercase; color: var(--accent); }
+
+/* ── Cards / grids ── */
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin: 26px 0; }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin: 26px 0; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 20px 22px; }
+.card h3 { margin: 0 0 8px; font-size: 17px; }
+.card p { margin: 6px 0 0; font-size: 15px; color: #38423b; }
+.card .tag { font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--muted); display: block; margin-bottom: 10px; }
+
+/* ── Two-layer diagram ── */
+.layers { display: grid; grid-template-columns: 1fr auto 1fr; gap: 0; margin: 30px 0; align-items: stretch; }
+.layer { background: var(--surface); border: 1px solid var(--line); padding: 24px 24px 26px; }
+.layer.det { border-radius: 10px 0 0 10px; border-right: 0; }
+.layer.nar { border-radius: 0 10px 10px 0; border-left: 0; }
+.layer h3 { margin: 0; font-size: 18px; display: flex; align-items: center; gap: 9px; }
+.layer .sub { color: var(--muted); font-size: 13px; margin: 4px 0 16px; }
+.layer ul { margin: 0; padding-left: 18px; font-size: 14.5px; color: #38423b; }
+.layer li { margin: 7px 0; }
+.layer-divider { display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: var(--ink); color: #fff; padding: 0 16px; min-width: 132px; text-align: center; }
+.layer-divider .rule { font-size: 12.5px; font-weight: 650; line-height: 1.4; }
+.layer-divider .barrier { font-size: 26px; margin-bottom: 6px; opacity: 0.85; }
+.dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; }
+.dot.det { background: var(--blue); } .dot.nar { background: var(--accent); }
+
+/* ── Pipeline flow ── */
+.flow { margin: 30px 0; }
+.flow-row { display: flex; justify-content: center; }
+.node {
+    background: var(--surface); border: 1px solid var(--line-strong); border-radius: 9px;
+    padding: 12px 18px; text-align: center; min-width: 180px;
+}
+.node .nlabel { font-weight: 750; font-size: 15px; }
+.node .nsub { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.node.ticker { background: var(--ink); color: #fff; border-color: var(--ink); border-radius: 999px; min-width: 0; padding: 9px 26px; }
+.node.synth { border-color: var(--accent); border-width: 2px; background: var(--accent-soft); }
+.node.brief { border-color: var(--blue); border-style: dashed; }
+.branches { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin: 4px 0; }
+.branch { background: var(--surface); border: 1px solid var(--line); border-top: 3px solid var(--accent); border-radius: 8px; padding: 16px 18px; }
+.branch.b2 { border-top-color: var(--blue); } .branch.b3 { border-top-color: var(--watch); }
+.branch h4 { margin: 0 0 4px; font-size: 15px; }
+.branch .step { font-size: 13.5px; color: #38423b; padding: 5px 0; border-top: 1px solid var(--line); }
+.branch .step:first-of-type { border-top: 0; }
+.branch .pill { font-size: 10.5px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase;
+    border-radius: 4px; padding: 2px 6px; vertical-align: middle; }
+.pill.py { background: #e6effb; color: var(--blue); }
+.pill.ai { background: var(--accent-soft); color: var(--accent); }
+.pill.web { background: var(--watch-soft); color: var(--watch); }
+.arrow-down { display: flex; justify-content: center; align-items: center; height: 34px; color: var(--line-strong); }
+.arrow-down svg { width: 22px; height: 34px; }
+.fanout { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 4px; }
+.artifact { text-align: center; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 14px 10px; }
+.artifact .ext { font-family: var(--mono); font-size: 13px; font-weight: 700; color: var(--accent); }
+.artifact .who { font-size: 12px; color: var(--muted); margin-top: 3px; }
+
+/* ── Tables ── */
+.table-wrap { overflow-x: auto; margin: 24px 0; border: 1px solid var(--line); border-radius: 10px; }
+table { width: 100%; border-collapse: collapse; font-size: 14.5px; background: var(--surface); }
+thead th { text-align: left; font-size: 11px; font-weight: 800; letter-spacing: 0.07em; text-transform: uppercase;
+    color: var(--muted); background: var(--surface-muted); padding: 11px 14px; border-bottom: 1px solid var(--line); }
+td { padding: 11px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+tbody tr:last-child td { border-bottom: 0; }
+td.metric { font-weight: 700; white-space: nowrap; }
+.tone { display: inline-flex; align-items: center; gap: 7px; font-weight: 700; font-size: 13px; }
+.tone .d { width: 8px; height: 8px; border-radius: 50%; }
+.tone.pos .d { background: var(--positive); } .tone.pos { color: var(--positive); }
+.tone.watch .d { background: var(--watch); } .tone.watch { color: var(--watch); }
+.tone.neg .d { background: var(--negative); } .tone.neg { color: var(--negative); }
+.tone.na .d { background: var(--neutral); } .tone.na { color: var(--neutral); }
+
+/* ── Archetype gate cards ── */
+.gate { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin: 26px 0; }
+.arch { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+.arch .name { font-weight: 800; font-size: 15px; }
+.arch .ex { font-size: 12px; color: var(--muted); margin: 2px 0 12px; font-family: var(--mono); }
+.arch .verdict { font-size: 13px; padding: 6px 0; border-top: 1px dashed var(--line); display: flex; justify-content: space-between; gap: 8px; }
+.arch .verdict span:last-child { font-weight: 700; }
+.v-sup { color: var(--negative); } .v-adv { color: var(--watch); } .v-ok { color: var(--positive); }
+
+/* ── Example callout ── */
+.example { display: grid; grid-template-columns: 1fr 1fr; gap: 0; margin: 28px 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.example .col { padding: 20px 22px; }
+.example .before { background: var(--negative-soft); }
+.example .after { background: var(--positive-soft); border-left: 1px solid var(--line); }
+.example .h { font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; margin: 0 0 10px; }
+.example .before .h { color: var(--negative); } .example .after .h { color: var(--positive); }
+.example .quote { font-family: var(--mono); font-size: 13px; line-height: 1.5; background: rgba(255,255,255,0.6); border-radius: 6px; padding: 10px 12px; }
+
+/* ── Steps list (AI passes) ── */
+.steps { counter-reset: step; margin: 26px 0; display: grid; gap: 12px; }
+.step-row { display: grid; grid-template-columns: 40px 1fr; gap: 16px; align-items: start;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+.step-row .num { counter-increment: step; width: 32px; height: 32px; border-radius: 50%; background: var(--accent);
+    color: #fff; font-weight: 800; display: flex; align-items: center; justify-content: center; font-size: 14px; }
+.step-row .num::before { content: counter(step); }
+.step-row h4 { margin: 2px 0 4px; font-size: 16px; }
+.step-row p { margin: 0; font-size: 14.5px; color: #38423b; }
+.step-row .meta { font-family: var(--mono); font-size: 11.5px; color: var(--muted); margin-top: 6px; }
+
+footer { padding: 40px 0 0; color: var(--muted); font-size: 13.5px; }
+footer .line { border-top: 1px solid var(--line); padding-top: 22px; }
+
+@media (max-width: 860px) {
+    .grid2, .grid3, .branches, .fanout, .gate, .example { grid-template-columns: 1fr; }
+    .layers { grid-template-columns: 1fr; }
+    .layer.det { border-radius: 10px 10px 0 0; border-right: 1px solid var(--line); border-bottom: 0; }
+    .layer.nar { border-radius: 0 0 10px 10px; border-left: 1px solid var(--line); border-top: 0; }
+    .layer-divider { min-width: 0; padding: 12px; flex-direction: row; gap: 12px; }
+    .layer-divider .barrier { margin: 0; }
+    .topnav { display: none; }
+}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="#top"><span class="brand-mark" aria-hidden="true"></span> ViridisCFA</a>
+    <nav class="topnav">
+      <a href="#idea">Core idea</a>
+      <a href="#pipeline">Pipeline</a>
+      <a href="#quant">Quant engine</a>
+      <a href="#ai">AI layers</a>
+      <a href="#trust">Trust</a>
+      <a href="#mcp">As an MCP</a>
+    </nav>
+  </div>
+</div>
+
+<div class="shell" id="top">
+
+  <header class="hero">
+    <p class="eyebrow">Architecture &amp; Design</p>
+    <h1>How ViridisCFA<br>actually works</h1>
+    <p class="lede">An automated equity-research engine that pulls SEC filings, earnings-call transcripts and
+      insider trades, runs a <strong>deterministic financial scorecard in Python</strong>, and uses GPT-5.4 only for
+      the things language models are actually good at — reading, synthesising and arguing. The numbers are never
+      left to the model.</p>
+    <div class="hero-meta">
+      <span class="chip"><strong>~4,200</strong> LOC Python</span>
+      <span class="chip"><strong>3</strong> parallel data branches</span>
+      <span class="chip"><strong>5</strong> deterministic models</span>
+      <span class="chip"><strong>4</strong> output formats</span>
+      <span class="chip">Served over <strong>MCP</strong></span>
+    </div>
+  </header>
+
+  <!-- ───────────────────────── CORE IDEA ───────────────────────── -->
+  <section id="idea">
+    <p class="sec-eyebrow">01 · The core idea</p>
+    <h2>A deterministic spine, with narrative muscle</h2>
+    <p class="section-intro">The central design decision — the thing everything else hangs off — is a hard line
+      between what a computer must do and what a language model is allowed to do.</p>
+
+    <p>Large language models are persuasive but cannot be trusted to do GAAP arithmetic: they round, they
+      "helpfully" recompute, they hallucinate a plausible figure when one is missing. So ViridisCFA computes every
+      financial metric in Python, directly from verified SEC XBRL facts, and then <strong>forbids the model from
+      touching those numbers</strong>. The model's job is to read the prose a human analyst reads — the filing
+      narrative, the earnings call, the footnotes — and to weigh, connect and argue. Two layers, one barrier between
+      them.</p>
+
+    <div class="layers">
+      <div class="layer det">
+        <h3><span class="dot det"></span> Deterministic layer</h3>
+        <div class="sub">Python · pandas · SEC XBRL facts</div>
+        <ul>
+          <li>Altman&nbsp;Z′, Piotroski&nbsp;F, Beneish&nbsp;M</li>
+          <li>Liquidity, leverage, FCF, cash runway</li>
+          <li>Business-model applicability gate</li>
+          <li>Insider Form&nbsp;4 tagging (10b5-1 vs open-market)</li>
+          <li>Provenance, versioning, caching</li>
+        </ul>
+      </div>
+      <div class="layer-divider">
+        <div class="barrier">⊘</div>
+        <div class="rule">The model may<br>read these numbers —<br>never recompute<br>or contradict them.</div>
+      </div>
+      <div class="layer nar">
+        <h3><span class="dot nar"></span> Narrative layer</h3>
+        <div class="sub">GPT-5.4 Responses API · flex tier</div>
+        <ul>
+          <li>Reads the 10-K/10-Q narrative &amp; footnotes</li>
+          <li>Analyses the earnings-call transcript</li>
+          <li>Cross-checks for what the first pass missed</li>
+          <li>Synthesises one argument-driven memo</li>
+          <li>Commits to a stance &amp; conviction</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="insight">
+      A mathematically exact number can still be the wrong number to show. Knowing <em>when not to display a
+      metric</em> is what separates a research tool from a ratio calculator.
+      <span class="by">— the design principle behind the applicability gate</span>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── PIPELINE ───────────────────────── -->
+  <section id="pipeline">
+    <p class="sec-eyebrow">02 · The pipeline</p>
+    <h2>One ticker, three branches, one memo</h2>
+    <p class="section-intro">Each ticker fans out into three independent data branches that run concurrently, then
+      converge into a single synthesis. Everything downstream is deterministic plumbing.</p>
+
+    <div class="flow">
+      <div class="flow-row"><div class="node ticker">Ticker · e.g. <strong>IONQ</strong></div></div>
+      <div class="arrow-down"><svg viewBox="0 0 22 34"><path d="M11 0v26m0 0l-7-7m7 7l7-7" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></div>
+
+      <div class="branches">
+        <div class="branch b1">
+          <h4>1 · SEC Filing</h4>
+          <div class="step">Fetch latest 10-K/10-Q <span class="pill web">edgar</span></div>
+          <div class="step">Deterministic scorecard <span class="pill py">python</span></div>
+          <div class="step">Expert analysis <span class="pill ai">gpt · high</span></div>
+          <div class="step">Missing-info cross-check <span class="pill ai">gpt</span></div>
+        </div>
+        <div class="branch b2">
+          <h4>2 · Transcript</h4>
+          <div class="step">Scrape earnings call <span class="pill web">selenium</span></div>
+          <div class="step">Tone, Q&amp;A, red flags <span class="pill ai">gpt</span></div>
+          <div class="step muted">Optional — degrades gracefully</div>
+        </div>
+        <div class="branch b3">
+          <h4>3 · Insider Form 4</h4>
+          <div class="step">6-month buy/sell window <span class="pill web">edgar</span></div>
+          <div class="step">Tag 10b5-1 vs open-market <span class="pill py">python</span></div>
+          <div class="step">Dedup &amp; size %-of-position <span class="pill py">python</span></div>
+        </div>
+      </div>
+
+      <div class="arrow-down"><svg viewBox="0 0 22 34"><path d="M11 0v26m0 0l-7-7m7 7l7-7" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></div>
+      <div class="flow-row"><div class="node synth"><div class="nlabel">Final synthesis</div><div class="nsub">argument-driven memo + adjudicated stance</div></div></div>
+      <div class="arrow-down"><svg viewBox="0 0 22 34"><path d="M11 0v26m0 0l-7-7m7 7l7-7" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></div>
+      <div class="flow-row"><div class="node brief"><div class="nlabel">Decision brief</div><div class="nsub">structured JSON, emitted inline with the memo</div></div></div>
+      <div class="arrow-down"><svg viewBox="0 0 22 34"><path d="M11 0v26m0 0l-7-7m7 7l7-7" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></div>
+
+      <div class="fanout">
+        <div class="artifact"><div class="ext">.md</div><div class="who">agents &amp; humans</div></div>
+        <div class="artifact"><div class="ext">.json</div><div class="who">UI contract</div></div>
+        <div class="artifact"><div class="ext">.html</div><div class="who">dashboard</div></div>
+        <div class="artifact"><div class="ext">.pdf</div><div class="who">export</div></div>
+      </div>
+    </div>
+
+    <p>Branches run in a thread pool, so wall-clock time is the slowest branch, not the sum. The filing branch is
+      the heavy one: it generates the scorecard, runs a high-reasoning <em>expert analysis</em>, then a second
+      <em>missing-information</em> pass that acts as an adversarial reviewer of the first. Multiple comma-separated
+      tickers additionally produce a <strong>batch comparison</strong> — a ranked screen built from the finished
+      memos.</p>
+  </section>
+
+  <!-- ───────────────────────── QUANT ENGINE ───────────────────────── -->
+  <section id="quant">
+    <p class="sec-eyebrow">03 · The deterministic quant engine</p>
+    <h2>Exact numbers — and the judgement to know when they apply</h2>
+    <p class="section-intro">Five model families are computed from XBRL facts with full audit trails. The
+      interesting part is not the math; it is the layer that decides which numbers are meaningful for <em>this</em>
+      company.</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Metric</th><th>What it measures</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td class="metric">Altman&nbsp;Z′</td><td>Bankruptcy / distress risk</td><td>Book-value (private-firm) variant; assumes a non-financial operating company.</td></tr>
+          <tr><td class="metric">Piotroski&nbsp;F</td><td>Fundamental quality (0–9)</td><td>Profitability, leverage/liquidity, operating efficiency.</td></tr>
+          <tr><td class="metric">Beneish&nbsp;M</td><td>Earnings-manipulation likelihood</td><td>Canonical 8-variable model; flags imputed &amp; out-of-range scores.</td></tr>
+          <tr><td class="metric">Liquidity &amp; leverage</td><td>Current / quick ratio, debt-to-equity</td><td>Missing inputs are surfaced, never silently zero-filled.</td></tr>
+          <tr><td class="metric">FCF yield · Cash runway</td><td>Capital efficiency · solvency clock</td><td>Runway = cash ÷ operating burn, shown only when burning.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>The applicability gate — why this exists</h3>
+    <p>Altman assumes working capital and sales-to-assets mean something. Beneish assumes an established firm with
+      stable revenue. Hand those models a bank, a REIT, a pre-revenue biotech or a hyper-growth software company and
+      they return authoritative-looking numbers that are <strong>category errors</strong>. So before scoring, the
+      engine classifies the issuer — by SIC code, revenue-to-assets and sales growth — and suppresses or caveats the
+      metrics that do not apply.</p>
+
+    <div class="gate">
+      <div class="arch">
+        <div class="name">Financial / REIT</div>
+        <div class="ex">SIC 6000–6799 · JPM, O</div>
+        <div class="verdict"><span>Altman Z′</span><span class="v-sup">suppressed</span></div>
+        <div class="verdict"><span>Beneish M</span><span class="v-sup">suppressed</span></div>
+        <div class="verdict"><span>Piotroski</span><span class="v-adv">advisory</span></div>
+      </div>
+      <div class="arch">
+        <div class="name">Pre-revenue</div>
+        <div class="ex">rev/assets &lt; 2% · IONQ, ATAI</div>
+        <div class="verdict"><span>Altman Z′</span><span class="v-adv">advisory</span></div>
+        <div class="verdict"><span>Beneish M</span><span class="v-sup">suppressed</span></div>
+        <div class="verdict"><span>Runway</span><span class="v-ok">surfaced</span></div>
+      </div>
+      <div class="arch">
+        <div class="name">Hyper-growth</div>
+        <div class="ex">sales +50%+ YoY · PLTR</div>
+        <div class="verdict"><span>Altman Z′</span><span class="v-ok">computed</span></div>
+        <div class="verdict"><span>Beneish M</span><span class="v-adv">advisory</span></div>
+        <div class="verdict"><span>Piotroski</span><span class="v-ok">computed</span></div>
+      </div>
+      <div class="arch">
+        <div class="name">Standard</div>
+        <div class="ex">operating company · KN, GOOGL</div>
+        <div class="verdict"><span>Altman Z′</span><span class="v-ok">computed</span></div>
+        <div class="verdict"><span>Beneish M</span><span class="v-ok">computed</span></div>
+        <div class="verdict"><span>Piotroski</span><span class="v-ok">computed</span></div>
+      </div>
+    </div>
+
+    <p>A separate guard catches Beneish scores that fall outside the model's empirically meaningful band — a
+      tell-tale of a tiny or freshly-listed issuer whose ratios blow up on small denominators. The score is shown,
+      but flagged as a numerical artifact rather than a manipulation signal.</p>
+
+    <div class="example">
+      <div class="col before">
+        <p class="h">Before the gate — AISP (micro-cap)</p>
+        <p class="quote">Beneish M-Score <strong>12.51</strong><br>→ "High Risk" · <em>Programmatically Verified</em></p>
+        <p style="font-size:14px;margin-bottom:0">Presented as a clean earnings-manipulation signal — with full authority — on a number that is pure noise.</p>
+      </div>
+      <div class="col after">
+        <p class="h">After the gate</p>
+        <p class="quote">Beneish M-Score <strong>12.51</strong><br>→ advisory · <em>outside meaningful range</em></p>
+        <p style="font-size:14px;margin-bottom:0">The model's verdict, softened and caveated. The narrative layer then leans on cash runway instead.</p>
+      </div>
+    </div>
+
+    <p class="muted">Every value carries an honest status — <code>Programmatically Computed</code>, not "Verified" —
+      plus disclosure of any imputed or derived inputs. The arithmetic is exact; the label never over-claims.</p>
+  </section>
+
+  <!-- ───────────────────────── AI LAYERS ───────────────────────── -->
+  <section id="ai">
+    <p class="sec-eyebrow">04 · The AI layers</p>
+    <h2>Four passes, each with one job</h2>
+    <p class="section-intro">The model is used in a chain where each step is narrow and checkable, rather than one
+      monolithic "analyse this company" prompt.</p>
+
+    <div class="steps">
+      <div class="step-row"><div class="num"></div><div>
+        <h4>Expert analysis</h4>
+        <p>Reads the full filing plus the deterministic scorecard and writes a structured analysis — but is told to
+          flag any metric the scorecard marks not-applicable for the business model, rather than parrot it.</p>
+        <div class="meta">gpt-5.4 · reasoning: high</div>
+      </div></div>
+      <div class="step-row"><div class="num"></div><div>
+        <h4>Missing-information cross-check</h4>
+        <p>A second, adversarial pass: "what did the team miss?" It re-reads the filing against the first analysis
+          and surfaces only what was omitted or wrong — catching gaps a single pass glides over.</p>
+        <div class="meta">gpt-5.4 · reasoning: medium</div>
+      </div></div>
+      <div class="step-row"><div class="num"></div><div>
+        <h4>Final synthesis</h4>
+        <p>Weaves filing, missing-info, transcript and insider data into one memo organised by <em>insight</em>, not
+          by source document. It opens with comparability flags, then argues, then commits — see below.</p>
+        <div class="meta">gpt-5.4 · medium · emits the brief inline</div>
+      </div></div>
+      <div class="step-row"><div class="num"></div><div>
+        <h4>Decision brief</h4>
+        <p>A strict JSON contract — stance, conviction, thesis, upside/risk drivers, catalysts, data-quality flags —
+          emitted in the <em>same</em> response as the memo, so the structured summary can't drift from the prose.</p>
+        <div class="meta">one structured object · falls back to a separate call if needed</div>
+      </div></div>
+    </div>
+
+    <h3>Making the stance earn its place</h3>
+    <p>A research tool that always says "Neutral" is useless. The synthesis prompt forces an explicit adjudication
+      step — <strong>"The Call"</strong> — that weighs which case the evidence actually supports and names the
+      deciding variables, before stating a stance. Neutral is reserved for genuinely two-sided setups and must come
+      with "the single development that would move me off the fence." Conviction is calibrated to how lopsided the
+      evidence is.</p>
+    <p class="muted">In testing, this moved a batch of six story stocks from a reflexive 6×Neutral to a calibrated
+      mix — Bullish on the healthiest name, Bearish (low conviction) on the weakest — with the genuinely balanced
+      names correctly staying Neutral.</p>
+  </section>
+
+  <!-- ───────────────────────── TRUST ───────────────────────── -->
+  <section id="trust">
+    <p class="sec-eyebrow">05 · Trust, reproducibility &amp; cost</p>
+    <h2>Every report can be audited and cheaply re-derived</h2>
+
+    <div class="grid2">
+      <div class="card">
+        <span class="tag">Provenance</span>
+        <h3>A footer the model can't fake</h3>
+        <p>Engine version, prompt version, model, tier, filing accession and a UTC timestamp are appended
+          <em>in code</em> after the model returns — so provenance can never be omitted, reworded or hallucinated.</p>
+      </div>
+      <div class="card">
+        <span class="tag">Comparability flags</span>
+        <h3>The traps that fool juniors</h3>
+        <p>Every memo opens by reconciling its sources: GAAP vs non-GAAP, filing figures vs call figures, and an
+          annual scorecard whose period may pre-date a quarterly filing. Mismatches are stated, not buried.</p>
+      </div>
+      <div class="card">
+        <span class="tag">Safety</span>
+        <h3>Sanitised, escaped output</h3>
+        <p>The model-written body is HTML-sanitised before it is opened in headless Chrome for PDF export, so a
+          <code>&lt;script&gt;</code> echoed out of a filing can't execute. Every dynamic value is escaped.</p>
+      </div>
+      <div class="card">
+        <span class="tag">Honest tone</span>
+        <h3>No green-by-default</h3>
+        <p>Dashboard colour comes from the model's actual verdict or the real number — never from the word
+          "verified." Negative free cash flow shows red; an un-judged ratio stays neutral, not falsely green.</p>
+      </div>
+    </div>
+
+    <h3>Ingredient-based caching — pay only for what changed</h3>
+    <p>The pipeline runs on flex pricing (~50% cheaper, slower) and caches on <em>ingredients</em>, not time. A
+      per-ticker manifest records the inputs that produced each artifact; on the next run, only the steps whose
+      inputs actually changed are re-executed.</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>If this changes…</th><th>…this re-runs</th><th>Detected by</th></tr></thead>
+        <tbody>
+          <tr><td class="metric">New filing</td><td>Everything — full re-analysis</td><td>SEC accession number</td></tr>
+          <tr><td class="metric">Quant engine version</td><td>Filing analysis (scorecard + expert)</td><td>Version string</td></tr>
+          <tr><td class="metric">Transcript / insider data</td><td>Final synthesis only</td><td>Content hash</td></tr>
+          <tr><td class="metric">Synthesis prompt version</td><td>Final synthesis + brief</td><td>Version string</td></tr>
+          <tr><td class="metric">Renderer version</td><td>HTML / PDF re-render — no model cost</td><td>Version string</td></tr>
+          <tr><td class="metric">Nothing</td><td>Nothing — served from cache, $0.00</td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="muted">A no-transcript ticker records a sentinel rather than a null, so it reaches a stable cache state
+      instead of re-paying for synthesis on every run — a subtlety that matters for the long tail of small-caps.</p>
+  </section>
+
+  <!-- ───────────────────────── MCP ───────────────────────── -->
+  <section id="mcp">
+    <p class="sec-eyebrow">06 · As a product</p>
+    <h2>Research that lives inside your agent</h2>
+    <p class="section-intro">The pipeline is exposed as a Model Context Protocol server — the bet being that the
+      future is not another web app, but capabilities that plug straight into the tools people already drive all
+      day: Claude&nbsp;Code, Cursor, Codex.</p>
+
+    <div class="grid3">
+      <div class="card">
+        <span class="tag">analyze_ticker</span>
+        <h3>Full research run</h3>
+        <p>Runs the entire pipeline for one ticker and returns the synthesised memo. Ingredient caching means a
+          repeat call is near-free.</p>
+      </div>
+      <div class="card">
+        <span class="tag">compare_tickers</span>
+        <h3>Ranked screen</h3>
+        <p>Analyses several names and returns a comparative ranking table with stance, conviction and a one-line
+          rationale per company.</p>
+      </div>
+      <div class="card">
+        <span class="tag">list / retrieve</span>
+        <h3>Your research history</h3>
+        <p>Lists prior analyses with dates, filing types and cost, and serves any cached report back instantly.</p>
+      </div>
+    </div>
+    <p>An agent calling these tools gets the same auditable artifacts a human would — the markdown memo for reading,
+      the JSON brief as a UI contract — without the project ever needing to build or host a front end.</p>
+  </section>
+
+  <footer>
+    <div class="line">
+      <strong>ViridisCFA Research Engine.</strong> Built on SEC EDGAR (edgartools) + GPT-5.4. Reports are
+      model-generated research artifacts, not investment advice — every figure traces to a cited filing, and every
+      report carries its own provenance.
+    </div>
+  </footer>
+
+</div>
+</body>
+</html>
